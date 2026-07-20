@@ -55,6 +55,7 @@ impl HandlerRegistry {
         handlers.insert("gd_node_call", runtime::mutate::call_method);
         handlers.insert("gd_game_eval", runtime::eval::game_eval);
         handlers.insert("gd_signal", runtime::signals::signal);
+        handlers.insert("gd_input", runtime::input::input);
         HandlerRegistry { handlers }
     }
 

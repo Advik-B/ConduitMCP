@@ -3,6 +3,7 @@
 //! global singletons; none is registered in the engine-free `phase1` registry.
 
 pub mod eval;
+pub mod input;
 pub mod inspect;
 pub mod mutate;
 pub mod signals;
