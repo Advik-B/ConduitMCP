@@ -53,6 +53,8 @@ impl HandlerRegistry {
         handlers.insert("gd_node_get_property", runtime::inspect::get_property);
         handlers.insert("gd_node_set_property", runtime::mutate::set_property);
         handlers.insert("gd_node_call", runtime::mutate::call_method);
+        handlers.insert("gd_game_eval", runtime::eval::game_eval);
+        handlers.insert("gd_signal", runtime::signals::signal);
         HandlerRegistry { handlers }
     }
 
