@@ -1,0 +1,23 @@
+{
+  "name": "conduit-mcp-server",
+  "version": "0.1.0",
+  "description": "Conduit broker: an MCP stdio server aggregating the Godot editor and game bridges.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "conduit-mcp-server": "src/index.ts"
+  },
+  "scripts": {
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.5.0"
+  }
+}

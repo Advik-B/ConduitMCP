@@ -4,9 +4,9 @@ compatibility_minimum = 4.4
 reloadable = true
 
 [libraries]
-linux.debug.x86_64 = "res://../bridge/target/debug/libconduit.so"
-linux.release.x86_64 = "res://../bridge/target/release/libconduit.so"
-windows.debug.x86_64 = "res://../bridge/target/debug/conduit.dll"
-windows.release.x86_64 = "res://../bridge/target/release/conduit.dll"
-macos.debug = "res://../bridge/target/debug/libconduit.dylib"
-macos.release = "res://../bridge/target/release/libconduit.dylib"
+linux.debug.x86_64 = "res://../target/debug/libconduit.so"
+linux.release.x86_64 = "res://../target/release/libconduit.so"
+windows.debug.x86_64 = "res://../target/debug/conduit.dll"
+windows.release.x86_64 = "res://../target/release/conduit.dll"
+macos.debug = "res://../target/debug/libconduit.dylib"
+macos.release = "res://../target/release/libconduit.dylib"
