@@ -21,7 +21,28 @@ pub struct HandlerRegistry {
 }
 
 impl HandlerRegistry {
+    /// The engine-free registry: only the pure proof handlers. Used by the
+    /// dispatcher unit tests and the stress harness, which run without Godot.
     pub fn phase1() -> Self {
+        let mut handlers: HashMap<&'static str, HandlerFn> = HashMap::new();
+        handlers.insert("gd_ping", ping);
+        handlers.insert("gd_wait_frames", wait_frames);
+        HandlerRegistry { handlers }
+    }
+
+    /// The editor personality's handler set. Diagnostics-only tools plus the
+    /// edit-time tools that land in later commits share the common proof
+    /// handlers here.
+    pub fn editor() -> Self {
+        let mut handlers: HashMap<&'static str, HandlerFn> = HashMap::new();
+        handlers.insert("gd_ping", ping);
+        handlers.insert("gd_wait_frames", wait_frames);
+        HandlerRegistry { handlers }
+    }
+
+    /// The game personality's handler set. The runtime inspection, evaluation,
+    /// input, and observation tools register here as they are implemented.
+    pub fn game() -> Self {
         let mut handlers: HashMap<&'static str, HandlerFn> = HashMap::new();
         handlers.insert("gd_ping", ping);
         handlers.insert("gd_wait_frames", wait_frames);

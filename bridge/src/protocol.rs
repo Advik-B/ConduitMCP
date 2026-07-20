@@ -13,6 +13,32 @@ use serde_json::Value;
 /// hostile length prefix cannot exhaust memory (whitepaper section 9).
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
+/// Broker-to-bridge protocol version. The broker refuses to proceed on a
+/// mismatch so a stale library produces a clear message (whitepaper section 7.5).
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// The first frame a bridge writes after accepting a connection, wrapped as
+/// `{"hello": Hello}` so the broker can distinguish it from id-correlated
+/// responses (whitepaper section 7.5). It is built once on the main thread and
+/// handed to the IO thread as bytes, so the listener never calls the engine.
+#[derive(Debug, Clone, Serialize)]
+pub struct Hello {
+    pub role: String,
+    pub protocol_version: u32,
+    pub bridge_version: String,
+    pub engine_version: String,
+    pub project_path: String,
+    pub pid: u32,
+}
+
+impl Hello {
+    /// The JSON payload for the hello frame: `{"hello": {...}}`.
+    pub fn to_frame_payload(&self) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({ "hello": self }))
+            .unwrap_or_else(|_| b"{\"hello\":null}".to_vec())
+    }
+}
+
 /// A command sent from the broker to the bridge.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Command {

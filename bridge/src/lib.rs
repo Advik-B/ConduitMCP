@@ -9,7 +9,9 @@ pub mod handlers;
 pub mod protocol;
 pub mod transport;
 
+mod bridge_core;
 mod plugin;
+mod runtime_node;
 
 use godot::prelude::*;
 
