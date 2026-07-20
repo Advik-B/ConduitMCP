@@ -5,6 +5,8 @@
 pub mod eval;
 pub mod input;
 pub mod inspect;
+pub mod lifecycle;
 pub mod mutate;
+pub mod observe;
 pub mod signals;
 pub mod support;

@@ -56,6 +56,14 @@ impl HandlerRegistry {
         handlers.insert("gd_game_eval", runtime::eval::game_eval);
         handlers.insert("gd_signal", runtime::signals::signal);
         handlers.insert("gd_input", runtime::input::input);
+        handlers.insert("gd_screenshot", runtime::observe::screenshot);
+        handlers.insert("gd_perf", runtime::observe::perf);
+        handlers.insert("gd_get_logs", runtime::observe::get_logs);
+        handlers.insert("gd_get_errors", runtime::observe::get_errors);
+        handlers.insert("gd_pause", runtime::lifecycle::pause);
+        handlers.insert("gd_step_frames", runtime::lifecycle::step_frames);
+        handlers.insert("gd_wait_time", runtime::lifecycle::wait_time);
+        handlers.insert("gd_set_time_scale", runtime::lifecycle::set_time_scale);
         HandlerRegistry { handlers }
     }
 

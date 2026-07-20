@@ -113,6 +113,8 @@ pub enum BridgeError {
     InvalidProperty(String),
     #[error("{0}")]
     CallFailed(String),
+    #[error("{0}")]
+    NotAvailableHeadless(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -126,6 +128,7 @@ impl BridgeError {
             BridgeError::NodeNotFound(_) => "node_not_found",
             BridgeError::InvalidProperty(_) => "invalid_property",
             BridgeError::CallFailed(_) => "call_failed",
+            BridgeError::NotAvailableHeadless(_) => "not_available_headless",
             BridgeError::Internal(_) => "internal_error",
         }
     }
