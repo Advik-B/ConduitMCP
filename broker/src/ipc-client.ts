@@ -1,6 +1,10 @@
 // Connects to a Conduit bridge over a local socket, frames requests, and
 // correlates responses by monotonically increasing id with per-request
 // timeouts (whitepaper sections 6.4 correlation and 7.5 lifecycle).
+//
+// Two id-less frame shapes arrive unsolicited: the hello frame the bridge
+// writes first on every connection, and event frames. Everything else is an
+// id-correlated response.
 
 import net from "node:net";
 
@@ -24,11 +28,28 @@ export class BridgeError extends Error {
   }
 }
 
+export interface Hello {
+  role: "editor" | "game";
+  protocol_version: number;
+  bridge_version: string;
+  engine_version: string;
+  project_path: string;
+  pid: number;
+}
+
+export interface BridgeEvent {
+  event: string;
+  data?: unknown;
+}
+
 interface BridgeResponse {
-  id: number;
-  ok: boolean;
+  id?: number;
+  ok?: boolean;
   result?: unknown;
   error?: BridgeErrorPayload;
+  hello?: Hello;
+  event?: string;
+  data?: unknown;
 }
 
 interface Pending {
@@ -52,6 +73,12 @@ export class BridgeClient {
   private readonly socketPath: string;
   private readonly defaultTimeoutMs: number;
 
+  private hello: Hello | null = null;
+  private readonly helloWaiters: Array<(hello: Hello) => void> = [];
+
+  onEvent: ((event: BridgeEvent) => void) | null = null;
+  onClose: (() => void) | null = null;
+
   constructor(options: BridgeClientOptions) {
     this.socketPath = options.socketPath;
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -66,7 +93,23 @@ export class BridgeClient {
       });
       socket.once("error", (error) => reject(error));
       socket.on("data", (chunk: Buffer) => this.onData(chunk));
-      socket.on("close", () => this.onClose());
+      socket.on("close", () => this.handleClose());
+    });
+  }
+
+  /// Resolve with the bridge's hello frame, waiting up to `timeoutMs` for it.
+  waitForHello(timeoutMs = 5_000): Promise<Hello> {
+    if (this.hello) {
+      return Promise.resolve(this.hello);
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new BridgeError({ code: "timeout", message: "no hello frame from bridge", retryable: true }));
+      }, timeoutMs);
+      this.helloWaiters.push((hello) => {
+        clearTimeout(timer);
+        resolve(hello);
+      });
     });
   }
 
@@ -80,22 +123,36 @@ export class BridgeClient {
       return;
     }
     for (const frame of frames) {
-      let response: BridgeResponse;
+      let message: BridgeResponse;
       try {
-        response = JSON.parse(frame.toString("utf8")) as BridgeResponse;
+        message = JSON.parse(frame.toString("utf8")) as BridgeResponse;
       } catch {
         continue;
       }
-      this.settle(response);
+      if (message.hello) {
+        this.setHello(message.hello);
+      } else if (typeof message.event === "string") {
+        this.onEvent?.({ event: message.event, data: message.data });
+      } else if (typeof message.id === "number") {
+        this.settle(message);
+      }
+    }
+  }
+
+  private setHello(hello: Hello): void {
+    this.hello = hello;
+    const waiters = this.helloWaiters.splice(0);
+    for (const waiter of waiters) {
+      waiter(hello);
     }
   }
 
   private settle(response: BridgeResponse): void {
-    const pending = this.pending.get(response.id);
+    const pending = this.pending.get(response.id!);
     if (!pending) {
       return; // stale or unknown id; ignore
     }
-    this.pending.delete(response.id);
+    this.pending.delete(response.id!);
     clearTimeout(pending.timer);
     if (response.ok) {
       pending.resolve(response.result);
@@ -109,9 +166,10 @@ export class BridgeClient {
     }
   }
 
-  private onClose(): void {
+  private handleClose(): void {
     this.failAll(new BridgeError({ code: "disconnected", message: "bridge connection closed", retryable: true }));
     this.socket = null;
+    this.onClose?.();
   }
 
   private failAll(error: Error): void {
@@ -139,6 +197,14 @@ export class BridgeClient {
       this.pending.set(id, { resolve, reject, timer });
       socket.write(encodeFrame({ id, tool, args }));
     });
+  }
+
+  helloInfo(): Hello | null {
+    return this.hello;
+  }
+
+  isConnected(): boolean {
+    return this.socket !== null;
   }
 
   close(): void {
