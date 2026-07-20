@@ -1,1 +1,7 @@
 /target
+bridge/target
+tools/
+node_modules/
+broker/node_modules/
+example-project/.godot/
+*.uid

@@ -1,0 +1,13 @@
+; Engine configuration file.
+; Minimal project used for Conduit integration tests.
+
+config_version=5
+
+[application]
+
+config/name="Conduit Example"
+config/features=PackedStringArray("4.4")
+
+[debug]
+
+settings/stdout/print_fps=false
