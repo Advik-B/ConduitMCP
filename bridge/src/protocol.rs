@@ -107,6 +107,12 @@ pub enum BridgeError {
     Busy,
     #[error("invalid arguments: {0}")]
     InvalidArgs(String),
+    #[error("{0}")]
+    NodeNotFound(String),
+    #[error("{0}")]
+    InvalidProperty(String),
+    #[error("{0}")]
+    CallFailed(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -117,6 +123,9 @@ impl BridgeError {
             BridgeError::UnknownTool(_) => "unknown_tool",
             BridgeError::Busy => "busy",
             BridgeError::InvalidArgs(_) => "invalid_args",
+            BridgeError::NodeNotFound(_) => "node_not_found",
+            BridgeError::InvalidProperty(_) => "invalid_property",
+            BridgeError::CallFailed(_) => "call_failed",
             BridgeError::Internal(_) => "internal_error",
         }
     }

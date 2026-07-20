@@ -14,6 +14,8 @@ use serde_json::{json, Value};
 use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
 use crate::protocol::BridgeError;
 
+pub mod runtime;
+
 type HandlerFn = fn(&Value, &FrameContext) -> HandlerOutcome;
 
 pub struct HandlerRegistry {
@@ -46,6 +48,11 @@ impl HandlerRegistry {
         let mut handlers: HashMap<&'static str, HandlerFn> = HashMap::new();
         handlers.insert("gd_ping", ping);
         handlers.insert("gd_wait_frames", wait_frames);
+        handlers.insert("gd_tree_get", runtime::inspect::get_tree);
+        handlers.insert("gd_node_get_info", runtime::inspect::get_info);
+        handlers.insert("gd_node_get_property", runtime::inspect::get_property);
+        handlers.insert("gd_node_set_property", runtime::mutate::set_property);
+        handlers.insert("gd_node_call", runtime::mutate::call_method);
         HandlerRegistry { handlers }
     }
 

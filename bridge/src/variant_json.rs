@@ -108,6 +108,34 @@ fn to_color(value: &Value) -> Result<Color, BridgeError> {
     ))
 }
 
+/// Convert a JSON value into a Variant, coercing untagged JSON toward an
+/// expected property type where the type is known from the node
+/// (whitepaper section 7.3). The tagged form always wins, so an explicit
+/// `__type` is honoured regardless of `expected`.
+pub fn json_to_variant_typed(value: &Value, expected: VariantType) -> Result<Variant, BridgeError> {
+    if type_tag(value).is_some() {
+        return json_to_variant(value);
+    }
+    match expected {
+        VariantType::VECTOR2 => Ok(to_vector2(value)?.to_variant()),
+        VariantType::VECTOR3 => Ok(to_vector3(value)?.to_variant()),
+        VariantType::COLOR => Ok(to_color(value)?.to_variant()),
+        VariantType::FLOAT => value
+            .as_f64()
+            .map(|n| n.to_variant())
+            .ok_or_else(|| invalid("expected a number for a float property")),
+        VariantType::INT => value
+            .as_i64()
+            .map(|n| n.to_variant())
+            .ok_or_else(|| invalid("expected an integer for an int property")),
+        VariantType::BOOL => value
+            .as_bool()
+            .map(|b| b.to_variant())
+            .ok_or_else(|| invalid("expected a boolean property value")),
+        _ => json_to_variant(value),
+    }
+}
+
 /// Convert a JSON value into a Variant, honouring the `__type` discriminator.
 pub fn json_to_variant(value: &Value) -> Result<Variant, BridgeError> {
     match value {
