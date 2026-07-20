@@ -6,8 +6,20 @@ config_version=5
 [application]
 
 config/name="Conduit Example"
+run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.4")
+
+[autoload]
+
+ConduitRuntime="*res://addons/conduit/conduit_runtime.tscn"
 
 [debug]
 
 settings/stdout/print_fps=false
+
+[input]
+
+move_right={
+"deadzone": 0.5,
+"events": []
+}
