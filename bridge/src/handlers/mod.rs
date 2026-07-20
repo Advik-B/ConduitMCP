@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
 use crate::protocol::BridgeError;
 
+pub mod editor;
 pub mod runtime;
 
 type HandlerFn = fn(&Value, &FrameContext) -> HandlerOutcome;
@@ -39,6 +40,8 @@ impl HandlerRegistry {
         let mut handlers: HashMap<&'static str, HandlerFn> = HashMap::new();
         handlers.insert("gd_ping", ping);
         handlers.insert("gd_wait_frames", wait_frames);
+        handlers.insert("gd_play", editor::play::play);
+        handlers.insert("gd_stop", editor::play::stop);
         HandlerRegistry { handlers }
     }
 
