@@ -106,8 +106,10 @@ async function download(url: string, dest: string): Promise<void> {
 }
 
 async function installBrokerDeps(): Promise<void> {
-  console.log("Installing broker dependencies (bun install) ...");
-  await run(["bun", "install"], join(repoRoot, "broker"));
+  // Install at the workspace root so broker deps hoist into a root node_modules
+  // that repo-level dev scripts (tests/evals) can also resolve.
+  console.log("Installing workspace dependencies (bun install) ...");
+  await run(["bun", "install"], repoRoot);
 }
 
 async function fetchCargoDeps(): Promise<void> {

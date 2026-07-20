@@ -1,0 +1,16 @@
+{
+  "name": "conduit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Conduit workspace root: hoists broker deps so repo-level dev scripts resolve them.",
+  "workspaces": ["broker"],
+  "scripts": {
+    "setup": "bun scripts/setup.ts",
+    "stress": "bun tests/evals/phase1_stress.ts"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76"
+  }
+}
