@@ -3,3 +3,5 @@
 //! game bridge online.
 
 pub mod play;
+pub mod scene;
+pub mod support;

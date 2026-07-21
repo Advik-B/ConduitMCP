@@ -43,6 +43,16 @@ impl HandlerRegistry {
         handlers.insert("gd_wait_frames", wait_frames);
         handlers.insert("gd_play", editor::play::play);
         handlers.insert("gd_stop", editor::play::stop);
+        handlers.insert("gd_scene_open", editor::scene::open);
+        handlers.insert("gd_scene_create", editor::scene::create);
+        handlers.insert("gd_scene_tree_get", editor::scene::tree_get);
+        handlers.insert("gd_scene_save", editor::scene::save);
+        handlers.insert("gd_scene_save_all", editor::scene::save_all);
+        handlers.insert("gd_node_add", editor::scene::node_add);
+        handlers.insert("gd_node_remove", editor::scene::node_remove);
+        handlers.insert("gd_node_reparent", editor::scene::node_reparent);
+        handlers.insert("gd_node_rename", editor::scene::node_rename);
+        handlers.insert("gd_node_duplicate", editor::scene::node_duplicate);
         HandlerRegistry { handlers }
     }
 
