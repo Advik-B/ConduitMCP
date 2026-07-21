@@ -2,6 +2,7 @@
 //! only in the editor process; the game-lifecycle tools here are what bring the
 //! game bridge online.
 
+pub mod editor_state;
 pub mod play;
 pub mod project;
 pub mod resource;

@@ -61,6 +61,9 @@ impl HandlerRegistry {
         handlers.insert("gd_resource_set_property", editor::resource::set_property);
         handlers.insert("gd_project_get_setting", editor::project::get_setting);
         handlers.insert("gd_project_set_setting", editor::project::set_setting);
+        handlers.insert("gd_undo", editor::editor_state::undo);
+        handlers.insert("gd_redo", editor::editor_state::redo);
+        handlers.insert("gd_editor_get_state", editor::editor_state::get_state);
         HandlerRegistry { handlers }
     }
 
