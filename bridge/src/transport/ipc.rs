@@ -50,15 +50,52 @@ impl ActivationContext {
     }
 }
 
-/// Resolve the listener socket path. An explicit `CONDUIT_SOCK` wins (used by
-/// tests and by a broker that launches the editor); otherwise a stable
-/// per-project name under the temp dir, matching the `conduit-{role}-{hash}`
-/// scheme of whitepaper section 7.2.
-pub fn socket_path(project_path: &str) -> PathBuf {
-    if let Some(explicit) = std::env::var_os("CONDUIT_SOCK") {
-        return PathBuf::from(explicit);
+/// Which personality a bridge presents, which selects both its handler set and
+/// its socket endpoint name (whitepaper sections 6.3 and 7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Editor,
+    Game,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Editor => "editor",
+            Role::Game => "game",
+        }
     }
-    std::env::temp_dir().join(format!("conduit-editor-{}.sock", short_hash(project_path)))
+}
+
+/// The directory holding the per-project socket endpoints. `CONDUIT_RUNTIME_DIR`
+/// overrides it so a test can point both the game bridge and the broker at the
+/// same private directory; otherwise it is the system temp dir.
+fn runtime_dir() -> PathBuf {
+    std::env::var_os("CONDUIT_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+}
+
+/// Resolve the listener socket path for a role, matching the
+/// `conduit-{role}-{hash}` scheme of whitepaper section 7.2.
+///
+/// The editor endpoint honours an explicit `CONDUIT_SOCK` (used by tests and by
+/// a broker that launches the editor). The game endpoint deliberately ignores
+/// `CONDUIT_SOCK` and appends the process id, both because the editor-launched
+/// game inherits the editor's `CONDUIT_SOCK` and must not collide with it, and
+/// because several game instances can run at once (section 7.2).
+pub fn socket_path(role: Role, project_path: &str) -> PathBuf {
+    match role {
+        Role::Editor => {
+            if let Some(explicit) = std::env::var_os("CONDUIT_SOCK") {
+                return PathBuf::from(explicit);
+            }
+            runtime_dir().join(format!("conduit-editor-{}.sock", short_hash(project_path)))
+        }
+        Role::Game => runtime_dir().join(format!(
+            "conduit-game-{}-{}.sock",
+            short_hash(project_path),
+            std::process::id()
+        )),
+    }
 }
 
 /// FNV-1a over the project path, low 32 bits as hex. Stable and trivially
@@ -82,10 +119,14 @@ pub struct Listener {
 impl Listener {
     /// Bind the socket and spawn the accept loop on a dedicated thread.
     ///
-    /// The caller is responsible for having checked [`ActivationContext::should_bind`];
-    /// this function performs the bind unconditionally.
+    /// `hello_payload` is the pre-serialised hello frame written first on every
+    /// new connection (whitepaper section 7.5); it is built on the main thread
+    /// so the IO thread never calls the engine. The caller is responsible for
+    /// having checked [`ActivationContext::should_bind`]; this function performs
+    /// the bind unconditionally.
     pub fn spawn(
         path: PathBuf,
+        hello_payload: Vec<u8>,
         inbound_tx: Sender<Command>,
         outbound_rx: Receiver<Response>,
     ) -> std::io::Result<Listener> {
@@ -105,7 +146,7 @@ impl Listener {
         let thread_stop = Arc::clone(&stop);
         let handle = thread::Builder::new()
             .name("conduit-ipc".to_string())
-            .spawn(move || accept_loop(listener, inbound_tx, outbound_rx, thread_stop))?;
+            .spawn(move || accept_loop(listener, hello_payload, inbound_tx, outbound_rx, thread_stop))?;
 
         Ok(Listener { path, stop, handle: Some(handle) })
     }
@@ -131,15 +172,21 @@ impl Drop for Listener {
 
 fn accept_loop(
     listener: interprocess::local_socket::Listener,
+    hello_payload: Vec<u8>,
     inbound_tx: Sender<Command>,
     outbound_rx: Receiver<Response>,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
-            Ok(stream) => {
+            Ok(mut stream) => {
                 if let Err(err) = stream.set_nonblocking(true) {
                     eprintln!("conduit: could not set stream non-blocking: {err}");
+                    continue;
+                }
+                // Announce ourselves first so the broker can check role and
+                // protocol version before issuing commands (section 7.5).
+                if write_framed_bytes(&mut stream, &hello_payload, &stop).is_err() {
                     continue;
                 }
                 // Drop any responses left over from a prior connection so their
@@ -250,10 +297,15 @@ fn handle_inbound_frame(
 /// Write a response frame, tolerating non-blocking `WouldBlock` by retrying.
 /// Frames are small and the broker reads continuously, so this seldom spins.
 fn write_response(stream: &mut Stream, response: &Response, stop: &Arc<AtomicBool>) -> std::io::Result<()> {
-    let bytes = response.to_bytes();
-    let mut framed = Vec::with_capacity(bytes.len() + 4);
-    framed.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-    framed.extend_from_slice(&bytes);
+    write_framed_bytes(stream, &response.to_bytes(), stop)
+}
+
+/// Length-prefix and write an arbitrary payload, retrying on non-blocking
+/// `WouldBlock`. Shared by the hello frame and every response.
+fn write_framed_bytes(stream: &mut Stream, payload: &[u8], stop: &Arc<AtomicBool>) -> std::io::Result<()> {
+    let mut framed = Vec::with_capacity(payload.len() + 4);
+    framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    framed.extend_from_slice(payload);
 
     let mut written = 0;
     while written < framed.len() {
@@ -328,13 +380,32 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_honours_explicit_override() {
+    fn editor_socket_path_honours_explicit_override() {
         // Uses a process-wide env var; scoped tightly and restored. `set_var`
         // and `remove_var` are unsafe in edition 2024 because they mutate shared
         // process state; no other test reads CONDUIT_SOCK concurrently.
         let previous = std::env::var_os("CONDUIT_SOCK");
         unsafe { std::env::set_var("CONDUIT_SOCK", "/tmp/explicit-conduit.sock") };
-        assert_eq!(socket_path("/whatever"), PathBuf::from("/tmp/explicit-conduit.sock"));
+        assert_eq!(socket_path(Role::Editor, "/whatever"), PathBuf::from("/tmp/explicit-conduit.sock"));
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CONDUIT_SOCK", value),
+                None => std::env::remove_var("CONDUIT_SOCK"),
+            }
+        }
+    }
+
+    #[test]
+    fn game_socket_path_ignores_override_and_carries_pid() {
+        // The game endpoint must never reuse CONDUIT_SOCK (the editor-launched
+        // game inherits it) and appends the pid so instances never collide.
+        let previous = std::env::var_os("CONDUIT_SOCK");
+        unsafe { std::env::set_var("CONDUIT_SOCK", "/tmp/explicit-conduit.sock") };
+        let path = socket_path(Role::Game, "/whatever");
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        assert!(name.starts_with("conduit-game-"), "unexpected game socket name: {name}");
+        assert!(name.ends_with(&format!("-{}.sock", std::process::id())));
+        assert_ne!(path, PathBuf::from("/tmp/explicit-conduit.sock"));
         unsafe {
             match previous {
                 Some(value) => std::env::set_var("CONDUIT_SOCK", value),

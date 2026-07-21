@@ -16,6 +16,7 @@ async function main(): Promise<void> {
   writeFileSync(binPointer, `${godotBin}\n`);
   await installBrokerDeps();
   await fetchCargoDeps();
+  await ensureDisplayTooling();
 
   console.log("");
   console.log("Setup complete.");
@@ -115,6 +116,44 @@ async function installBrokerDeps(): Promise<void> {
 async function fetchCargoDeps(): Promise<void> {
   console.log("Fetching Rust dependencies (cargo fetch) ...");
   await run(["cargo", "fetch"], join(repoRoot, "bridge"));
+}
+
+// The phase 2 screenshot acceptance runs Godot under a virtual display, because
+// --headless cannot render (see docs/api-gaps.md). Install Xvfb plus the X11
+// client and Mesa runtime libraries Godot loads dynamically. Best-effort:
+// warn rather than fail where apt or sudo is unavailable.
+async function ensureDisplayTooling(): Promise<void> {
+  if (process.platform !== "linux") {
+    return;
+  }
+  if (Bun.spawnSync(["which", "xvfb-run"]).exitCode === 0) {
+    console.log("Display tooling present (xvfb-run).");
+    return;
+  }
+  const packages = [
+    "xvfb",
+    "libxcursor1",
+    "libxinerama1",
+    "libxi6",
+    "libxrandr2",
+    "libxrender1",
+    "libxext6",
+    "libxfixes3",
+    "libx11-6",
+    "libgl1",
+    "libglx-mesa0",
+    "libgl1-mesa-dri",
+    "libglu1-mesa",
+  ];
+  console.log("Installing Xvfb and X11/Mesa runtime libraries (needs sudo apt) ...");
+  try {
+    await run(["sudo", "apt-get", "update"]);
+    await run(["sudo", "apt-get", "install", "-y", ...packages]);
+  } catch {
+    console.warn(
+      `Could not install display tooling automatically. The screenshot acceptance needs xvfb-run and: ${packages.join(" ")}`,
+    );
+  }
 }
 
 async function run(cmd: string[], cwd: string = repoRoot): Promise<void> {

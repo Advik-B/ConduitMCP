@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import type { BridgeClient } from "../src/ipc-client.ts";
+import type { BridgeManager } from "../src/bridge-manager.ts";
+import type { EventRing } from "../src/events.ts";
 import { registerTools } from "../src/index.ts";
 
 interface Registration {
@@ -24,14 +25,40 @@ function collectRegistrations(): { server: McpServer; registrations: Registratio
   return { server, registrations };
 }
 
+const EXPECTED_TOOLS = [
+  "gd_game_eval",
+  "gd_game_list",
+  "gd_get_errors",
+  "gd_get_events",
+  "gd_get_logs",
+  "gd_input",
+  "gd_node_call",
+  "gd_node_get_info",
+  "gd_node_get_property",
+  "gd_node_set_property",
+  "gd_pause",
+  "gd_perf",
+  "gd_ping",
+  "gd_play",
+  "gd_screenshot",
+  "gd_set_time_scale",
+  "gd_signal",
+  "gd_status",
+  "gd_step_frames",
+  "gd_stop",
+  "gd_tree_get",
+  "gd_wait_frames",
+  "gd_wait_time",
+];
+
 describe("tool definitions", () => {
   const { server, registrations } = collectRegistrations();
-  // The client is never called during registration, only wired into handlers.
-  registerTools(server, {} as unknown as BridgeClient);
+  // The manager and events are only used inside handlers, not during registration.
+  registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing);
 
-  test("registers exactly the phase 1 tools", () => {
+  test("registers exactly the phase 2 tool surface", () => {
     const names = registrations.map((r) => r.name).sort();
-    expect(names).toEqual(["gd_ping", "gd_wait_frames"]);
+    expect(names).toEqual(EXPECTED_TOOLS);
   });
 
   test("every tool name is gd_-prefixed and unique", () => {
@@ -50,9 +77,23 @@ describe("tool definitions", () => {
     }
   });
 
-  test("gd_ping is annotated read-only and non-destructive", () => {
-    const ping = registrations.find((r) => r.name === "gd_ping");
-    expect(ping?.config.annotations?.readOnlyHint).toBe(true);
-    expect(ping?.config.annotations?.destructiveHint).toBe(false);
+  test("descriptions stay within a reasonable length bound", () => {
+    for (const { config } of registrations) {
+      expect((config.description ?? "").length).toBeLessThan(400);
+    }
+  });
+
+  test("read tools are annotated read-only and non-destructive", () => {
+    for (const name of ["gd_node_get_property", "gd_get_logs", "gd_perf", "gd_status"]) {
+      const tool = registrations.find((r) => r.name === name);
+      expect(tool?.config.annotations?.readOnlyHint).toBe(true);
+      expect(tool?.config.annotations?.destructiveHint).toBe(false);
+    }
+  });
+
+  test("gd_game_eval is annotated destructive and open-world", () => {
+    const evalTool = registrations.find((r) => r.name === "gd_game_eval");
+    expect(evalTool?.config.annotations?.destructiveHint).toBe(true);
+    expect(evalTool?.config.annotations?.openWorldHint).toBe(true);
   });
 });

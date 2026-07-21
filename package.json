@@ -7,7 +7,8 @@
   "workspaces": ["broker"],
   "scripts": {
     "setup": "bun scripts/setup.ts",
-    "stress": "bun tests/evals/phase1_stress.ts"
+    "stress": "bun tests/evals/phase1_stress.ts",
+    "phase2": "bun tests/evals/phase2_runtime.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

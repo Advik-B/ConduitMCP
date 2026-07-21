@@ -14,6 +14,9 @@ use serde_json::{json, Value};
 use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
 use crate::protocol::BridgeError;
 
+pub mod editor;
+pub mod runtime;
+
 type HandlerFn = fn(&Value, &FrameContext) -> HandlerOutcome;
 
 pub struct HandlerRegistry {
@@ -21,10 +24,49 @@ pub struct HandlerRegistry {
 }
 
 impl HandlerRegistry {
+    /// The engine-free registry: only the pure proof handlers. Used by the
+    /// dispatcher unit tests and the stress harness, which run without Godot.
     pub fn phase1() -> Self {
         let mut handlers: HashMap<&'static str, HandlerFn> = HashMap::new();
         handlers.insert("gd_ping", ping);
         handlers.insert("gd_wait_frames", wait_frames);
+        HandlerRegistry { handlers }
+    }
+
+    /// The editor personality's handler set. Diagnostics-only tools plus the
+    /// edit-time tools that land in later commits share the common proof
+    /// handlers here.
+    pub fn editor() -> Self {
+        let mut handlers: HashMap<&'static str, HandlerFn> = HashMap::new();
+        handlers.insert("gd_ping", ping);
+        handlers.insert("gd_wait_frames", wait_frames);
+        handlers.insert("gd_play", editor::play::play);
+        handlers.insert("gd_stop", editor::play::stop);
+        HandlerRegistry { handlers }
+    }
+
+    /// The game personality's handler set. The runtime inspection, evaluation,
+    /// input, and observation tools register here as they are implemented.
+    pub fn game() -> Self {
+        let mut handlers: HashMap<&'static str, HandlerFn> = HashMap::new();
+        handlers.insert("gd_ping", ping);
+        handlers.insert("gd_wait_frames", wait_frames);
+        handlers.insert("gd_tree_get", runtime::inspect::get_tree);
+        handlers.insert("gd_node_get_info", runtime::inspect::get_info);
+        handlers.insert("gd_node_get_property", runtime::inspect::get_property);
+        handlers.insert("gd_node_set_property", runtime::mutate::set_property);
+        handlers.insert("gd_node_call", runtime::mutate::call_method);
+        handlers.insert("gd_game_eval", runtime::eval::game_eval);
+        handlers.insert("gd_signal", runtime::signals::signal);
+        handlers.insert("gd_input", runtime::input::input);
+        handlers.insert("gd_screenshot", runtime::observe::screenshot);
+        handlers.insert("gd_perf", runtime::observe::perf);
+        handlers.insert("gd_get_logs", runtime::observe::get_logs);
+        handlers.insert("gd_get_errors", runtime::observe::get_errors);
+        handlers.insert("gd_pause", runtime::lifecycle::pause);
+        handlers.insert("gd_step_frames", runtime::lifecycle::step_frames);
+        handlers.insert("gd_wait_time", runtime::lifecycle::wait_time);
+        handlers.insert("gd_set_time_scale", runtime::lifecycle::set_time_scale);
         HandlerRegistry { handlers }
     }
 

@@ -8,8 +8,11 @@ pub mod dispatcher;
 pub mod handlers;
 pub mod protocol;
 pub mod transport;
+pub mod variant_json;
 
+mod bridge_core;
 mod plugin;
+mod runtime_node;
 
 use godot::prelude::*;
 
