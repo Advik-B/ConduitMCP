@@ -29,6 +29,7 @@ const EXPECTED_TOOLS = [
   "gd_asset_add",
   "gd_asset_reimport",
   "gd_editor_get_state",
+  "gd_export_project",
   "gd_file_delete",
   "gd_file_move",
   "gd_game_eval",
@@ -81,7 +82,7 @@ describe("tool definitions", () => {
   // The manager and events are only used inside handlers, not during registration.
   registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing);
 
-  test("registers exactly the phase 1-3 tool surface", () => {
+  test("registers exactly the phase 1-4 tool surface", () => {
     const names = registrations.map((r) => r.name).sort();
     expect(names).toEqual(EXPECTED_TOOLS);
   });
@@ -143,5 +144,13 @@ describe("tool definitions", () => {
       expect(tool?.config.annotations?.readOnlyHint).toBe(true);
       expect(tool?.config.annotations?.destructiveHint).toBe(false);
     }
+  });
+
+  test("gd_export_project is annotated destructive, idempotent, and not read-only", () => {
+    const tool = registrations.find((r) => r.name === "gd_export_project");
+    expect(tool?.config.annotations?.readOnlyHint).toBe(false);
+    expect(tool?.config.annotations?.destructiveHint).toBe(true);
+    expect(tool?.config.annotations?.idempotentHint).toBe(true);
+    expect(tool?.config.annotations?.openWorldHint).toBe(false);
   });
 });

@@ -68,6 +68,7 @@ impl HandlerRegistry {
         handlers.insert("gd_asset_reimport", editor::assets::reimport);
         handlers.insert("gd_file_move", editor::files::move_file);
         handlers.insert("gd_file_delete", editor::files::delete);
+        handlers.insert("gd_export_project", editor::import_export::export_project);
         HandlerRegistry { handlers }
     }
 

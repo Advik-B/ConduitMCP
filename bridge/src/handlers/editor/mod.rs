@@ -5,6 +5,7 @@
 pub mod assets;
 pub mod editor_state;
 pub mod files;
+pub mod import_export;
 pub mod play;
 pub mod project;
 pub mod resource;

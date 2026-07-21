@@ -121,6 +121,8 @@ pub enum BridgeError {
     AlreadyExists(String),
     #[error("{0}")]
     NoEditedScene(String),
+    #[error("{0}")]
+    ExportFailed(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -138,6 +140,7 @@ impl BridgeError {
             BridgeError::ResourceError(_) => "resource_error",
             BridgeError::AlreadyExists(_) => "already_exists",
             BridgeError::NoEditedScene(_) => "no_edited_scene",
+            BridgeError::ExportFailed(_) => "export_failed",
             BridgeError::Internal(_) => "internal_error",
         }
     }
@@ -236,6 +239,8 @@ mod tests {
         assert!(!BridgeError::ResourceError("x".into()).retryable());
         assert_eq!(BridgeError::AlreadyExists("x".into()).code(), "already_exists");
         assert_eq!(BridgeError::NoEditedScene("x".into()).code(), "no_edited_scene");
+        assert_eq!(BridgeError::ExportFailed("x".into()).code(), "export_failed");
+        assert!(!BridgeError::ExportFailed("x".into()).retryable());
     }
 
     #[test]

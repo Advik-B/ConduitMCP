@@ -4,4 +4,5 @@ bridge/target
 node_modules/
 broker/node_modules/
 example-project/.godot/
+example-project/export/
 *.uid

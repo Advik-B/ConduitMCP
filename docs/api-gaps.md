@@ -148,3 +148,68 @@ already open could report ready before the second scene has actually loaded.
 Not exercised by any current tool (each session opens one scene into a fresh
 headless editor); worth revisiting if `gd_scene_open` needs to support
 switching between already-open scenes.
+
+## Phase 4: headless export
+
+No gdext binding for the export subsystem exists in this version
+(`EditorExportPlatform`/`EditorExportPreset` are absent from the crate's
+generated API, and the whitepaper's own Appendix B has no entry for it
+either). `gd_export_project` is implemented as a subprocess shell-out to
+Godot's own headless export CLI (`--export-pack` / `--export-debug` /
+`--export-release`), following the exact precedent `gd_script_validate`
+already established (`script.rs`): find the running Godot binary via
+`Os::get_executable_path()`, spawn it fresh and short-lived with
+`CONDUIT_ENABLE`/`CONDUIT_SOCK`/`CONDUIT_RUNTIME_DIR` stripped from its
+environment, and read its captured output back only once `try_wait` confirms
+the process has exited. This is not a fallback of last resort: Godot's export
+CLI flags are themselves the documented, stable, CI-standard mechanism for
+headless exports.
+
+One consequence worth noting: an export CLI invocation reports
+`is_editor_hint() == true` even without `--editor` (confirmed empirically —
+the bridge's own "Conduit (editor): listening on ..." log line appears during
+a bare `--export-pack` run). Unlike `gd_script_validate`'s subprocess (which
+runs non-editor, so removing `CONDUIT_ENABLE` genuinely stops its bind), the
+export subprocess's editor personality binds *unconditionally* —
+`should_bind()` returns `true` for `is_editor` regardless of the opt-in env
+vars, so stripping them cannot prevent the bind, only relocate it to the
+default socket path (`CONDUIT_RUNTIME_DIR` + a hash of the project path).
+That default is exactly what a live editor launched *without* an explicit
+`CONDUIT_SOCK` also computes — confirmed empirically that an export
+subprocess with `CONDUIT_RUNTIME_DIR` merely removed unlinks and steals a
+live editor's default socket file out from under it, breaking the broker's
+connection to a running session. The fix is isolation, not prevention: the
+handler sets `CONDUIT_RUNTIME_DIR` (rather than removing it) to a fresh,
+private, throwaway directory per export call, so whatever the subprocess
+inevitably binds can never collide with the parent's socket. Confirmed fixed
+empirically the same way the bug was found: a live editor bound to its
+default socket path stays connectable across an export call once this
+isolation is in place.
+
+Export templates are not required for `--export-pack` (confirmed empirically
+against Godot 4.7.1 with an empty `~/.local/share/godot/export_templates/`):
+pack-only mode writes only a resource-data file, never the platform template
+binary, and needs no virtual display either (export is asset packing, not
+rendering). `--export-debug`/`--export-release` do need a matching-version
+template and were not exercised by the phase 4 acceptance eval for that
+reason; `scripts/setup.ts` was deliberately left without template-download
+logic, since the low-cost `--export-pack` path was sufficient to satisfy the
+phase's acceptance criterion. Add that download step if a future phase needs
+a runnable (non-pack) headless export.
+
+The Godot 4.7.1 Linux export platform's preset name is `"Linux"` (the
+pre-4.3 `"Linux/X11"` naming is gone). Godot does not create missing
+intermediate directories for the export output path — a first write to
+`res://export/...` fails with "Can't open file for writing" unless the
+handler creates the parent directory itself first, which
+`import_export.rs` does.
+
+`example-project/export_presets.cfg`'s bridge files are split across two
+locations that don't match the whitepaper section 11/15 packaging layout: the
+`.gdextension` manifest lives at the project root
+(`example-project/conduit.gdextension`, the current dev layout), while only
+the runtime scene lives under `addons/conduit/`. A release preset's
+`exclude_filter` must therefore list both `addons/conduit/*` and
+`conduit.gdextension` (plus its `.uid` sidecar) to fully exclude the bridge —
+excluding only `addons/conduit/*`, as the whitepaper's packaging description
+alone would suggest, leaves `conduit.gdextension` behind.

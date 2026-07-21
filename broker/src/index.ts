@@ -17,6 +17,7 @@ import { BridgeManager } from "./bridge-manager.ts";
 import { EventRing } from "./events.ts";
 import { shortHash } from "./framing.ts";
 import { registerEditorAssetsTools } from "./tools/editor-assets.ts";
+import { registerEditorExportTools } from "./tools/editor-export.ts";
 import { registerEditorFilesTools } from "./tools/editor-files.ts";
 import { registerEditorProjectTools } from "./tools/editor-project.ts";
 import { registerEditorResourceTools } from "./tools/editor-resource.ts";
@@ -320,6 +321,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   registerEditorStateTools(server, manager);
   registerEditorAssetsTools(server, manager);
   registerEditorFilesTools(server, manager);
+  registerEditorExportTools(server, manager);
 }
 
 async function main(): Promise<void> {

@@ -11,6 +11,11 @@ import { BridgeError } from "./ipc-client.ts";
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
 export const AWAIT_TIMEOUT_MS = 120_000;
+// A headless export subprocess (whitepaper section 10, phase 4) runs far
+// longer than any await-capable call: it re-scans and re-imports the whole
+// project before packing, which can take minutes for a large or first-time
+// export.
+export const EXPORT_TIMEOUT_MS = 600_000;
 
 export type ToolResult = {
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
