@@ -64,6 +64,15 @@ impl HandlerRegistry {
         handlers.insert("gd_undo", editor::editor_state::undo);
         handlers.insert("gd_redo", editor::editor_state::redo);
         handlers.insert("gd_editor_get_state", editor::editor_state::get_state);
+        handlers.insert("gd_debug", editor::debug::debug);
+        handlers.insert("gd_editor_select", editor::collab::select);
+        handlers.insert("gd_editor_open_script", editor::collab::open_script);
+        handlers.insert("gd_editor_inspect", editor::collab::inspect);
+        handlers.insert("gd_editor_set_main_screen", editor::collab::set_main_screen);
+        handlers.insert("gd_editor_screenshot", editor::collab::screenshot);
+        handlers.insert("gd_editor_list_dialogs", editor::ui::list_dialogs);
+        handlers.insert("gd_editor_dialog_choose", editor::ui::dialog_choose);
+        handlers.insert("gd_editor_ui", editor::ui::editor_ui);
         handlers.insert("gd_asset_add", editor::assets::add);
         handlers.insert("gd_asset_reimport", editor::assets::reimport);
         handlers.insert("gd_file_move", editor::files::move_file);
@@ -182,6 +191,12 @@ mod tests {
             }
             _ => panic!("gd_ping should settle immediately"),
         }
+    }
+
+    #[test]
+    fn editor_registry_includes_debugger_tool() {
+        let names = HandlerRegistry::editor().tool_names();
+        assert!(names.contains(&"gd_debug"), "gd_debug must be registered on the editor bridge");
     }
 
     #[test]

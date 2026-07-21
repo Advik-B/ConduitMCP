@@ -129,6 +129,7 @@ impl Listener {
         hello_payload: Vec<u8>,
         inbound_tx: Sender<Command>,
         outbound_rx: Receiver<Response>,
+        event_rx: Receiver<Vec<u8>>,
     ) -> std::io::Result<Listener> {
         // A stale socket file from a previous run would block the bind.
         let _ = std::fs::remove_file(&path);
@@ -146,7 +147,7 @@ impl Listener {
         let thread_stop = Arc::clone(&stop);
         let handle = thread::Builder::new()
             .name("conduit-ipc".to_string())
-            .spawn(move || accept_loop(listener, hello_payload, inbound_tx, outbound_rx, thread_stop))?;
+            .spawn(move || accept_loop(listener, hello_payload, inbound_tx, outbound_rx, event_rx, thread_stop))?;
 
         Ok(Listener { path, stop, handle: Some(handle) })
     }
@@ -175,6 +176,7 @@ fn accept_loop(
     hello_payload: Vec<u8>,
     inbound_tx: Sender<Command>,
     outbound_rx: Receiver<Response>,
+    event_rx: Receiver<Vec<u8>>,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::SeqCst) {
@@ -189,10 +191,13 @@ fn accept_loop(
                 if write_framed_bytes(&mut stream, &hello_payload, &stop).is_err() {
                     continue;
                 }
-                // Drop any responses left over from a prior connection so their
-                // ids cannot leak onto a freshly connected broker.
+                // Drop any responses or events left over from a prior connection
+                // so stale ids cannot leak onto a freshly connected broker and a
+                // stale event cannot wedge its state; the broker resyncs on
+                // connect (whitepaper section 7.5).
                 while outbound_rx.try_recv().is_ok() {}
-                serve_connection(stream, &inbound_tx, &outbound_rx, &stop);
+                while event_rx.try_recv().is_ok() {}
+                serve_connection(stream, &inbound_tx, &outbound_rx, &event_rx, &stop);
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(1));
@@ -209,6 +214,7 @@ fn serve_connection(
     mut stream: Stream,
     inbound_tx: &Sender<Command>,
     outbound_rx: &Receiver<Response>,
+    event_rx: &Receiver<Vec<u8>>,
     stop: &Arc<AtomicBool>,
 ) {
     let mut decoder = FrameDecoder::new();
@@ -250,6 +256,16 @@ fn serve_connection(
         while let Ok(response) = outbound_rx.try_recv() {
             did_work = true;
             if write_response(&mut stream, &response, stop).is_err() {
+                return;
+            }
+        }
+
+        // Unsolicited event frames (already serialised on the main thread) are
+        // written after responses so a break event never jumps ahead of the
+        // response to the command that induced it (whitepaper section 7.5).
+        while let Ok(payload) = event_rx.try_recv() {
+            did_work = true;
+            if write_framed_bytes(&mut stream, &payload, stop).is_err() {
                 return;
             }
         }

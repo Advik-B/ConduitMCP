@@ -41,6 +41,12 @@ impl ConduitFrameSink {
     }
 }
 
+impl ConduitFrameSink {
+    pub(crate) fn drawn(&self) -> bool {
+        self.drawn
+    }
+}
+
 pub fn screenshot(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
     if is_headless() {
         return HandlerOutcome::Done(Err(BridgeError::NotAvailableHeadless(
@@ -68,7 +74,7 @@ pub fn screenshot(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
 }
 
 #[derive(Clone, Copy)]
-enum ImageFormat {
+pub(crate) enum ImageFormat {
     Png,
     Jpg,
 }
@@ -80,6 +86,19 @@ impl ImageFormat {
             ImageFormat::Jpg => "jpg",
         }
     }
+
+    pub(crate) fn from_arg(value: &str) -> Self {
+        match value {
+            "jpg" | "jpeg" => ImageFormat::Jpg,
+            _ => ImageFormat::Png,
+        }
+    }
+}
+
+/// Whether the display server cannot render (headless), used to reject visual
+/// tools with a clear error rather than returning an empty image.
+pub(crate) fn is_headless_display() -> bool {
+    is_headless()
 }
 
 struct ScreenshotPending {
@@ -100,30 +119,41 @@ impl ScreenshotPending {
 
     fn capture(&self) -> Result<Value, BridgeError> {
         let viewport = scene_root()?;
-        let texture = viewport
-            .get_texture()
-            .ok_or_else(|| BridgeError::Internal("viewport has no texture".into()))?;
-        let mut image = texture
-            .get_image()
-            .ok_or_else(|| BridgeError::NotAvailableHeadless("no rendered image available".into()))?;
-        if image.is_empty() {
-            return Err(BridgeError::NotAvailableHeadless("rendered image is empty".into()));
-        }
-        if let Some(max_dimension) = self.max_dimension {
-            resize_within(&mut image, max_dimension);
-        }
-        let buffer = match self.format {
-            ImageFormat::Png => image.save_png_to_buffer(),
-            ImageFormat::Jpg => image.save_jpg_to_buffer(),
-        };
-        Ok(json!({
-            "encoding": "base64",
-            "format": self.format.name(),
-            "width": image.get_width(),
-            "height": image.get_height(),
-            "image_base64": base64::encode(buffer.as_slice()),
-        }))
+        encode_viewport(&viewport.upcast(), self.max_dimension, self.format)
     }
+}
+
+/// Read a viewport's rendered texture and return it as a base64 image result.
+/// Shared by the game screenshot (`gd_screenshot`) and the editor screenshot
+/// (`gd_editor_screenshot`), which differ only in which viewport they capture.
+pub(crate) fn encode_viewport(
+    viewport: &Gd<godot::classes::Viewport>,
+    max_dimension: Option<i32>,
+    format: ImageFormat,
+) -> Result<Value, BridgeError> {
+    let texture = viewport
+        .get_texture()
+        .ok_or_else(|| BridgeError::Internal("viewport has no texture".into()))?;
+    let mut image = texture
+        .get_image()
+        .ok_or_else(|| BridgeError::NotAvailableHeadless("no rendered image available".into()))?;
+    if image.is_empty() {
+        return Err(BridgeError::NotAvailableHeadless("rendered image is empty".into()));
+    }
+    if let Some(max_dimension) = max_dimension {
+        resize_within(&mut image, max_dimension);
+    }
+    let buffer = match format {
+        ImageFormat::Png => image.save_png_to_buffer(),
+        ImageFormat::Jpg => image.save_jpg_to_buffer(),
+    };
+    Ok(json!({
+        "encoding": "base64",
+        "format": format.name(),
+        "width": image.get_width(),
+        "height": image.get_height(),
+        "image_base64": base64::encode(buffer.as_slice()),
+    }))
 }
 
 impl PendingOp for ScreenshotPending {

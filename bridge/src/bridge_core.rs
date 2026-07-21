@@ -13,7 +13,7 @@ use godot::prelude::*;
 
 use crate::dispatcher::{Dispatcher, DrainBudget};
 use crate::handlers::HandlerRegistry;
-use crate::protocol::{Command, Hello, Response, PROTOCOL_VERSION};
+use crate::protocol::{Command, EventSender, Hello, Response, PROTOCOL_VERSION};
 use crate::transport::channels::CommandChannels;
 use crate::transport::ipc::{socket_path, ActivationContext, Listener, Role};
 
@@ -22,11 +22,20 @@ use crate::transport::ipc::{socket_path, ActivationContext, Listener, Role};
 /// `enter_tree` via [`BridgeCore::start`], driven each frame by
 /// [`BridgeCore::run_frame`], and torn down in `exit_tree` via
 /// [`BridgeCore::stop`].
+/// The IO-thread ends of the channels, taken by [`BridgeCore::start`] when it
+/// spawns the listener.
+struct ListenerEndpoints {
+    inbound_tx: Sender<Command>,
+    outbound_rx: Receiver<Response>,
+    event_rx: Receiver<Vec<u8>>,
+}
+
 pub struct BridgeCore {
     role: Role,
     inbound_rx: Receiver<Command>,
     outbound_tx: Sender<Response>,
-    listener_endpoints: Option<(Sender<Command>, Receiver<Response>)>,
+    event_tx: Sender<Vec<u8>>,
+    listener_endpoints: Option<ListenerEndpoints>,
     dispatcher: Dispatcher,
     listener: Option<Listener>,
 }
@@ -39,10 +48,22 @@ impl BridgeCore {
             role,
             inbound_rx: channels.inbound_rx,
             outbound_tx: channels.outbound_tx,
-            listener_endpoints: Some((channels.inbound_tx, channels.outbound_rx)),
+            event_tx: channels.event_tx,
+            listener_endpoints: Some(ListenerEndpoints {
+                inbound_tx: channels.inbound_tx,
+                outbound_rx: channels.outbound_rx,
+                event_rx: channels.event_rx,
+            }),
             dispatcher,
             listener: None,
         }
+    }
+
+    /// A main-thread handle for emitting unsolicited event frames to the broker
+    /// (whitepaper section 7.5). The debugger plugin holds one to report break
+    /// and continue transitions.
+    pub fn event_sender(&self) -> EventSender {
+        EventSender::new(self.event_tx.clone())
     }
 
     /// Bind the listener if activation permits (whitepaper section 6.3). Safe to
@@ -54,13 +75,13 @@ impl BridgeCore {
             return;
         }
 
-        let Some((inbound_tx, outbound_rx)) = self.listener_endpoints.take() else {
+        let Some(ListenerEndpoints { inbound_tx, outbound_rx, event_rx }) = self.listener_endpoints.take() else {
             return;
         };
         let project = project_path();
         let path = socket_path(self.role, &project);
         let hello = build_hello(self.role, &project).to_frame_payload();
-        match Listener::spawn(path, hello, inbound_tx, outbound_rx) {
+        match Listener::spawn(path, hello, inbound_tx, outbound_rx, event_rx) {
             Ok(listener) => {
                 godot_print!("Conduit ({}): listening on {}", self.role.as_str(), listener.path().display());
                 self.listener = Some(listener);
