@@ -113,22 +113,28 @@ mechanism for editor-mode log capture is the `--log-file <path>` launch
 argument, which `log_tail::log_file_path()` prefers over the project setting
 when present.
 
-The engine's log writer (editor or game) does not flush on a bounded
-real-time wait. `gd_script_validate` originally reloaded the script in the
-live editor process and tailed its own `--log-file` output, waiting up to
-several real seconds (confirmed both via dispatcher frame count and via a
-genuine `std::time::Instant` deadline) for the just-emitted diagnostic lines
-to appear on disk — they never did, even though a separate process reading
-the same file moments later saw them immediately. This points to Godot's file
-logger being buffered like C stdio (flushed on buffer-fill or process exit,
-not on any timer tied to frames or wall clock), which no in-process wait can
-force. The fix: `gd_script_validate` now parses the target script in a fresh,
-short-lived subprocess (`godot --headless --path <project> --script <path>
---check-only`) and reads its captured stdout/stderr only after `try_wait`
-reports the process has exited, which guarantees a full flush. The subprocess
-has `CONDUIT_ENABLE`/`CONDUIT_SOCK`/`CONDUIT_RUNTIME_DIR` stripped from its
+`gd_script_validate` originally reloaded the script in the live editor
+process and tailed its own `--log-file` output. Reads from within that same
+process's own handler did not observe the just-emitted diagnostic lines
+within several real seconds of waiting (confirmed both via accumulated
+dispatcher frame count and via a genuine `std::time::Instant` deadline),
+even though a separate process (a debug harness) reading the same file
+shortly afterward, while the editor was still running, did see them. The
+exact mechanism behind that gap was not pinned down (it is not simply
+"unflushed until N KB of output accumulates": the run in question wrote only
+a few hundred bytes) and is not worth chasing further, since a live editor
+process is not a reliable diagnostics source either way for a tool that needs
+a bounded answer. The fix: `gd_script_validate` now parses the target script
+in a fresh, short-lived subprocess (`godot --headless --path <project>
+--script <path> --check-only`) and reads its captured stdout/stderr only
+after `try_wait` reports the process has exited — a point at which the
+subprocess's own output is guaranteed complete by the OS, independent of any
+flush timing question. The subprocess has
+`CONDUIT_ENABLE`/`CONDUIT_SOCK`/`CONDUIT_RUNTIME_DIR` stripped from its
 environment so its own GDExtension init never attempts to bind a bridge
-socket.
+socket. The tradeoff is a full Godot startup per validation call (roughly
+0.3s for a trivial script, more for a larger project) rather than an
+in-process reload.
 
 `EditorInterface::get_open_scenes()`/`get_scene_file_path()` do not reliably
 reflect a just-opened scene immediately after `open_scene_from_path` under
@@ -136,4 +142,9 @@ headless `--editor` runs (both were tried as the readiness signal for
 `gd_scene_open` and neither became true within a generous polling budget).
 `get_edited_scene_root().is_ok()` — the same call `gd_scene_tree_get` itself
 makes — is ready immediately in practice and is what `gd_scene_open` now polls
-for.
+for. Known limitation: this only proves *a* scene is edited, not that it is
+specifically the requested `path` — opening a second scene while a first is
+already open could report ready before the second scene has actually loaded.
+Not exercised by any current tool (each session opens one scene into a fresh
+headless editor); worth revisiting if `gd_scene_open` needs to support
+switching between already-open scenes.
