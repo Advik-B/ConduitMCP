@@ -12,6 +12,7 @@ pub mod variant_json;
 
 mod base64;
 mod bridge_core;
+mod debugger;
 mod log_tail;
 mod plugin;
 mod runtime_node;

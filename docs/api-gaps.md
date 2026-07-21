@@ -213,3 +213,88 @@ the runtime scene lives under `addons/conduit/`. A release preset's
 `conduit.gdextension` (plus its `.uid` sidecar) to fully exclude the bridge —
 excluding only `addons/conduit/*`, as the whitepaper's packaging description
 alone would suggest, leaves `conduit.gdextension` behind.
+
+## Phase 5: debugger and editor collaboration
+
+### The debugger plugin's capture only sees prefixed messages
+
+`EditorDebuggerPlugin::capture(message, data, session_id)` is only invoked for
+messages whose name is prefixed with the plugin's registered capture namespace.
+The core debugger replies `stack_dump` and `stack_frame_vars` carry no such
+prefix, so they never reach the plugin. Execution control (`break`, `continue`,
+`next`, `step`) works fine through `EditorDebuggerSession::send_message`, and
+the break/continue lifecycle is observable through the session's `breaked` and
+`continued` signals, but stack and variable data are not.
+
+Resolution: `gd_debug`'s `stack` and `vars` ops read the editor's own debugger
+dock, the tier-2 fallback whitepaper section 6.9 sanctions. The message names
+sent for control (`break`, `continue`, `next`, `step`) are the Godot 4.7.1 core
+protocol names and were verified working against that build.
+
+### Debugger-dock structure (Godot 4.7.1)
+
+The dock read in `debugger.rs` targets this live structure, discovered by
+walking the tree at a break (a future Godot may move these; the reads are
+class-based scans with text/metadata fallbacks so they degrade to a clear
+`call_failed` rather than misbehaving):
+
+- The dock is a `ScriptEditorDebugger` (one per session, named `Session N`),
+  reachable from `EditorInterface::get_base_control()` via `find_children` typed
+  `ScriptEditorDebugger`.
+- The call stack is a `Tree` whose root children are the frames. Each frame item
+  carries a column-0 metadata `Dictionary` with `file`, `line`, and `frame`; its
+  text is shaped `"0 - res://player.gd:24 - at function: _process"`. The stack is
+  populated automatically on break (no request needed), so `stack` settles in one
+  poll.
+- Frame variables live in an `EditorDebuggerInspector` (a subclass of
+  `EditorInspector`; there are two under the dock, and the first in tree order is
+  the stack-vars one, the second belongs to the expression evaluator). It shows
+  nothing until a stack frame is selected. Selecting the frame's tree item and
+  emitting `cell_selected` triggers the engine's `get_stack_frame_vars` request;
+  the inspector populates about 100 ms later with an `EditorDebuggerRemoteObjects`
+  whose property names are prefixed `Locals/`, `Members/`, and `Constants/`.
+
+`vars` settles on the first non-null edited object after a short settle delay,
+not on an object-identity change: the inspector reuses/keeps the object when the
+requested frame is already shown, so an identity-change gate would hang. A
+consequence is that switching to a *different* frame while a previous frame's
+vars are still shown can, in a narrow window, read the prior frame; the settle
+delay makes this unlikely and the common frame-0 case is exact.
+
+### The editor throttles hard while a game is halted
+
+While a game is breaked, the editor drops to its unfocused idle tick rate (a long
+per-frame sleep), which under a virtual display starved the pending-op polling
+that reads the dock and made a `vars` read take tens of seconds. `EditorNode`
+re-applies the unfocused throttle on window-focus churn, so a one-time
+`OS::set_low_processor_usage_mode(false)` does not stick.
+
+Resolution: `ConduitBridge::process` calls `debugger::keep_editor_responsive`
+every frame while a session is breaked, re-asserting
+`set_low_processor_usage_mode(false)` and a small sleep, and restores the prior
+value on continue/stop. With this, stack settles in one poll and vars in well
+under a second.
+
+### game_breaked is a broker-side state, not per-instance
+
+While a game is halted its main loop does not run, so its bridge never drains and
+game-bridge tools cannot complete. The broker learns the break state from the
+editor bridge's `debug_breaked`/`debug_continued` event frames (the first
+unsolicited bridge-to-broker events; see `protocol::Event`) and short-circuits
+`gameRequest` with a distinct, retryable `game_breaked` error instead of letting
+the call time out. This is one global flag, not mapped per game pid: debug
+sessions are editor-session-scoped (`session_id`), not tied to a specific game
+instance, so a multi-instance debug session is not distinguished. Adequate for a
+single debugged game; per-pid mapping is deferred.
+
+### Triggering the save-confirmation dialog
+
+The phase-5 acceptance dismisses a confirmation dialog. It is produced by
+activating the editor's Scene > Close Scene menu entry on a dirtied scene. The
+menu is a `PopupMenu` under the main-window `MenuBar` (`Scene`); `gd_editor_ui`
+`select_item` emits its `id_pressed` directly, which runs the menu action
+without showing the popup, and Close Scene on a dirty scene raises a
+`ConfirmationDialog` ("Please Confirm...", buttons Don't Save / Cancel /
+Save & Close). The node names in the menu path carry unstable `@Class@NNNN`
+suffixes, so tools and the eval locate the menu by finding `PopupMenu`s and
+matching the item text rather than by a fixed path.

@@ -6,7 +6,7 @@
 //! phase records targets a node in the edited scene, so that scene's history
 //! is the only one `gd_undo`/`gd_redo` need to reach.
 
-use godot::classes::EditorInterface;
+use godot::classes::{Control, EditorInterface};
 use godot::prelude::*;
 use serde_json::{json, Value};
 
@@ -80,7 +80,36 @@ pub fn get_state(_args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
             "open_scenes": scenes,
             "current_scene": current_scene,
             "selection": selection,
+            "main_screen": current_main_screen(&editor),
             "playing": editor.is_playing_scene(),
+            "breakpoints": crate::debugger::breakpoints_json(),
+            "debug": { "sessions": crate::debugger::sessions_json() },
         }))
     })
+}
+
+/// Best-effort name of the currently visible main-screen editor (2D, 3D, Script,
+/// Game, AssetLib). The editor exposes no direct getter (`docs/api-gaps.md`), so
+/// this reports the visible child of the main-screen container by class, mapped
+/// to the canonical name where recognized.
+fn current_main_screen(editor: &Gd<EditorInterface>) -> Value {
+    let Some(container) = editor.get_editor_main_screen() else {
+        return Value::Null;
+    };
+    for child in container.get_children().iter_shared() {
+        let visible = child.clone().try_cast::<Control>().map(|c| c.is_visible()).unwrap_or(false);
+        if visible {
+            let class = child.get_class().to_string();
+            let name = match class.as_str() {
+                "CanvasItemEditor" => "2D",
+                "Node3DEditor" => "3D",
+                "ScriptEditor" => "Script",
+                "GameView" => "Game",
+                "EditorAssetLibrary" => "AssetLib",
+                other => other,
+            };
+            return Value::String(name.to_string());
+        }
+    }
+    Value::Null
 }

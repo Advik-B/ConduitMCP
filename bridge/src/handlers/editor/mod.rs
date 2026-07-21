@@ -3,6 +3,8 @@
 //! game bridge online.
 
 pub mod assets;
+pub mod collab;
+pub mod debug;
 pub mod editor_state;
 pub mod files;
 pub mod import_export;
@@ -12,3 +14,4 @@ pub mod resource;
 pub mod scene;
 pub mod script;
 pub mod support;
+pub mod ui;

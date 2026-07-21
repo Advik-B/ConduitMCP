@@ -42,6 +42,12 @@ export class BridgeManager {
   private readonly games = new Map<number, GameInstance>();
   private currentPid: number | null = null;
   private readonly connectedSockets = new Set<string>();
+  // Break state learned from the editor bridge's debugger events. While the game
+  // is halted at a breakpoint its main loop does not run, so game-bridge tools
+  // cannot complete; the broker reports game_breaked instead of a timeout
+  // (whitepaper section 6.9). One global flag, not per-pid: debug sessions are
+  // editor-session-scoped and not mapped to a game pid (docs/api-gaps.md).
+  private debug: { breaked: boolean; sessionId: number | null } = { breaked: false, sessionId: null };
 
   constructor(private readonly options: BridgeManagerOptions) {}
 
@@ -54,12 +60,16 @@ export class BridgeManager {
         await client.connect();
         const hello = await client.waitForHello(5_000);
         checkProtocol(hello);
+        client.onEvent = (event) => this.handleEditorEvent(event);
         client.onClose = () => {
           this.editor = null;
           this.options.events.record("editor_disconnected", {});
         };
         this.editor = client;
         this.editorHello = hello;
+        // Resync break state: events emitted while the broker was disconnected
+        // are dropped bridge-side, so read the current state once on connect.
+        void this.resyncDebugState();
         return hello;
       } catch (error) {
         lastError = error;
@@ -89,6 +99,19 @@ export class BridgeManager {
     timeoutMs?: number,
     instance?: number,
   ): Promise<unknown> {
+    // A breaked game cannot service tools: its main loop is halted inside the
+    // debugger, so its bridge never drains. Fail fast and distinctly rather than
+    // letting the call time out (whitepaper section 6.9).
+    if (this.debug.breaked) {
+      return Promise.reject(
+        new BridgeError({
+          code: "game_breaked",
+          message:
+            "the game is halted at a breakpoint, so game-bridge tools cannot run; use gd_debug (stack, vars, step_over, step_into) or gd_debug op continue to resume",
+          retryable: true,
+        }),
+      );
+    }
     const game = instance != null ? this.games.get(instance) : this.currentGame();
     if (!game) {
       return Promise.reject(
@@ -100,6 +123,39 @@ export class BridgeManager {
       );
     }
     return game.client.request(tool, args, timeoutMs);
+  }
+
+  // Editor-bridge events are debugger lifecycle transitions (whitepaper section
+  // 7.5). Mirror break state so gameRequest can gate, and forward every event to
+  // the ring so gd_get_events surfaces it. Exposed for unit tests.
+  handleEditorEvent(event: { event: string; data?: unknown }): void {
+    const data = (event.data ?? {}) as { session_id?: number };
+    switch (event.event) {
+      case "debug_breaked":
+        this.debug = { breaked: true, sessionId: data.session_id ?? null };
+        break;
+      case "debug_continued":
+      case "debug_session_stopped":
+        this.debug = { breaked: false, sessionId: null };
+        break;
+      default:
+        break;
+    }
+    this.options.events.record(event.event, data as object);
+  }
+
+  private async resyncDebugState(): Promise<void> {
+    try {
+      const state = (await this.editorRequest("gd_editor_get_state", {})) as {
+        debug?: { sessions?: Array<{ id: number; breaked: boolean }> };
+      };
+      const breakedSession = state.debug?.sessions?.find((s) => s.breaked);
+      this.debug = breakedSession
+        ? { breaked: true, sessionId: breakedSession.id }
+        : { breaked: false, sessionId: null };
+    } catch {
+      // Best-effort; a failed resync leaves the last known state.
+    }
   }
 
   private currentGame(): GameInstance | null {
@@ -209,6 +265,7 @@ export class BridgeManager {
         protocol_version: this.editorHello?.protocol_version ?? null,
       },
       games: this.listGames(),
+      debug: { breaked: this.debug.breaked, session_id: this.debug.sessionId },
     };
   }
 }

@@ -15,7 +15,7 @@ use crate::protocol::{Command, Response};
 /// commands, which is what turns a burst into `busy` errors.
 pub const DEFAULT_INBOUND_CAPACITY: usize = 256;
 
-/// The four endpoints wiring the IO thread to the dispatcher.
+/// The endpoints wiring the IO thread to the dispatcher.
 pub struct CommandChannels {
     /// IO thread pushes inbound commands here.
     pub inbound_tx: Sender<Command>,
@@ -25,13 +25,20 @@ pub struct CommandChannels {
     pub outbound_tx: Sender<Response>,
     /// IO thread drains responses from here to write back to the broker.
     pub outbound_rx: Receiver<Response>,
+    /// Main-thread emitters (e.g. the debugger plugin) push pre-serialised
+    /// event-frame bytes here (whitepaper section 7.5). Unbounded and separate
+    /// from responses so an id-less event never collides with id correlation.
+    pub event_tx: Sender<Vec<u8>>,
+    /// IO thread drains event bytes from here to write back to the broker.
+    pub event_rx: Receiver<Vec<u8>>,
 }
 
 impl CommandChannels {
     pub fn new(inbound_capacity: usize) -> Self {
         let (inbound_tx, inbound_rx) = bounded::<Command>(inbound_capacity);
         let (outbound_tx, outbound_rx) = unbounded::<Response>();
-        CommandChannels { inbound_tx, inbound_rx, outbound_tx, outbound_rx }
+        let (event_tx, event_rx) = unbounded::<Vec<u8>>();
+        CommandChannels { inbound_tx, inbound_rx, outbound_tx, outbound_rx, event_tx, event_rx }
     }
 }
 

@@ -5,6 +5,7 @@
 
 use std::io::{self, Read, Write};
 
+use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -36,6 +37,45 @@ impl Hello {
     pub fn to_frame_payload(&self) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({ "hello": self }))
             .unwrap_or_else(|_| b"{\"hello\":null}".to_vec())
+    }
+}
+
+/// An unsolicited event frame, id-less and shaped `{"event": ..., "data": ...}`
+/// (whitepaper section 7.5). The bridge emits these to tell the broker about
+/// things that happen without being asked, such as a debug session breaking.
+/// The broker distinguishes them from responses by the absent `id`.
+#[derive(Debug, Clone, Serialize)]
+pub struct Event {
+    pub event: String,
+    pub data: Value,
+}
+
+impl Event {
+    /// The JSON payload for an event frame: `{"event": ..., "data": ...}`.
+    pub fn to_frame_payload(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_else(|_| b"{\"event\":\"internal_error\",\"data\":{}}".to_vec())
+    }
+}
+
+/// Main-thread handle for emitting event frames. It serializes the event to
+/// bytes on the caller's (main) thread and hands the bytes to the IO thread, so
+/// the listener never touches serde or the engine (mirroring the hello frame).
+#[derive(Clone)]
+pub struct EventSender {
+    tx: Sender<Vec<u8>>,
+}
+
+impl EventSender {
+    pub fn new(tx: Sender<Vec<u8>>) -> Self {
+        EventSender { tx }
+    }
+
+    /// Serialize and enqueue an event. Failure to enqueue (the broker socket is
+    /// gone) is dropped silently: events are best-effort and the broker resyncs
+    /// state on reconnect.
+    pub fn send(&self, event: &str, data: Value) {
+        let payload = Event { event: event.to_string(), data }.to_frame_payload();
+        let _ = self.tx.send(payload);
     }
 }
 
@@ -123,6 +163,10 @@ pub enum BridgeError {
     NoEditedScene(String),
     #[error("{0}")]
     ExportFailed(String),
+    #[error("{0}")]
+    NoDebugSession(String),
+    #[error("{0}")]
+    NotBreaked(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -141,12 +185,17 @@ impl BridgeError {
             BridgeError::AlreadyExists(_) => "already_exists",
             BridgeError::NoEditedScene(_) => "no_edited_scene",
             BridgeError::ExportFailed(_) => "export_failed",
+            BridgeError::NoDebugSession(_) => "no_debug_session",
+            BridgeError::NotBreaked(_) => "not_breaked",
             BridgeError::Internal(_) => "internal_error",
         }
     }
 
     pub fn retryable(&self) -> bool {
-        matches!(self, BridgeError::Busy)
+        // `busy` is transient backpressure. The debugger conditions are transient
+        // too: a game not yet attached may connect, and a not-breaked session may
+        // break, so an agent can sensibly retry both.
+        matches!(self, BridgeError::Busy | BridgeError::NoDebugSession(_) | BridgeError::NotBreaked(_))
     }
 
     pub fn to_body(&self) -> ErrorBody {
@@ -241,6 +290,30 @@ mod tests {
         assert_eq!(BridgeError::NoEditedScene("x".into()).code(), "no_edited_scene");
         assert_eq!(BridgeError::ExportFailed("x".into()).code(), "export_failed");
         assert!(!BridgeError::ExportFailed("x".into()).retryable());
+        assert_eq!(BridgeError::NoDebugSession("x".into()).code(), "no_debug_session");
+        assert!(BridgeError::NoDebugSession("x".into()).retryable());
+        assert_eq!(BridgeError::NotBreaked("x".into()).code(), "not_breaked");
+        assert!(BridgeError::NotBreaked("x".into()).retryable());
+    }
+
+    #[test]
+    fn event_frame_has_event_and_data_and_no_id() {
+        let payload = Event { event: "debug_breaked".into(), data: json!({"session_id": 1}) }.to_frame_payload();
+        let value: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(value["event"], "debug_breaked");
+        assert_eq!(value["data"]["session_id"], 1);
+        assert!(value.get("id").is_none());
+    }
+
+    #[test]
+    fn event_sender_serializes_onto_the_channel() {
+        let (tx, rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+        let sender = EventSender::new(tx);
+        sender.send("debug_continued", json!({"session_id": 3}));
+        let payload = rx.try_recv().expect("event enqueued");
+        let value: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(value["event"], "debug_continued");
+        assert_eq!(value["data"]["session_id"], 3);
     }
 
     #[test]

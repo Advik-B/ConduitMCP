@@ -28,7 +28,16 @@ function collectRegistrations(): { server: McpServer; registrations: Registratio
 const EXPECTED_TOOLS = [
   "gd_asset_add",
   "gd_asset_reimport",
+  "gd_debug",
+  "gd_editor_dialog_choose",
   "gd_editor_get_state",
+  "gd_editor_inspect",
+  "gd_editor_list_dialogs",
+  "gd_editor_open_script",
+  "gd_editor_screenshot",
+  "gd_editor_select",
+  "gd_editor_set_main_screen",
+  "gd_editor_ui",
   "gd_export_project",
   "gd_file_delete",
   "gd_file_move",
@@ -82,9 +91,14 @@ describe("tool definitions", () => {
   // The manager and events are only used inside handlers, not during registration.
   registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing);
 
-  test("registers exactly the phase 1-4 tool surface", () => {
+  test("registers exactly the phase 1-5 tool surface", () => {
     const names = registrations.map((r) => r.name).sort();
     expect(names).toEqual(EXPECTED_TOOLS);
+  });
+
+  test("the tool surface stays within the section 7.1 budget of 40-60 tools", () => {
+    expect(registrations.length).toBeGreaterThanOrEqual(40);
+    expect(registrations.length).toBeLessThanOrEqual(60);
   });
 
   test("every tool name is gd_-prefixed and unique", () => {
@@ -152,5 +166,27 @@ describe("tool definitions", () => {
     expect(tool?.config.annotations?.destructiveHint).toBe(true);
     expect(tool?.config.annotations?.idempotentHint).toBe(true);
     expect(tool?.config.annotations?.openWorldHint).toBe(false);
+  });
+
+  test("read-only editor tools are annotated read-only and non-destructive", () => {
+    for (const name of ["gd_editor_list_dialogs", "gd_editor_screenshot"]) {
+      const tool = registrations.find((r) => r.name === name);
+      expect(tool?.config.annotations?.readOnlyHint).toBe(true);
+      expect(tool?.config.annotations?.destructiveHint).toBe(false);
+    }
+  });
+
+  test("dialog and tier-2 UI tools are annotated destructive", () => {
+    for (const name of ["gd_editor_dialog_choose", "gd_editor_ui"]) {
+      const tool = registrations.find((r) => r.name === name);
+      expect(tool?.config.annotations?.readOnlyHint).toBe(false);
+      expect(tool?.config.annotations?.destructiveHint).toBe(true);
+    }
+  });
+
+  test("gd_debug is neither read-only nor destructive", () => {
+    const tool = registrations.find((r) => r.name === "gd_debug");
+    expect(tool?.config.annotations?.readOnlyHint).toBe(false);
+    expect(tool?.config.annotations?.destructiveHint).toBe(false);
   });
 });
