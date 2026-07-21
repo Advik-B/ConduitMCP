@@ -59,6 +59,8 @@ impl HandlerRegistry {
         handlers.insert("gd_script_validate", editor::script::validate);
         handlers.insert("gd_resource_create", editor::resource::create);
         handlers.insert("gd_resource_set_property", editor::resource::set_property);
+        handlers.insert("gd_project_get_setting", editor::project::get_setting);
+        handlers.insert("gd_project_set_setting", editor::project::set_setting);
         HandlerRegistry { handlers }
     }
 
