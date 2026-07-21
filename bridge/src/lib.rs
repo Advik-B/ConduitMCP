@@ -10,7 +10,9 @@ pub mod protocol;
 pub mod transport;
 pub mod variant_json;
 
+mod base64;
 mod bridge_core;
+mod log_tail;
 mod plugin;
 mod runtime_node;
 

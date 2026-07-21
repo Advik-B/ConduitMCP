@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
 use crate::protocol::BridgeError;
 
+pub mod args;
 pub mod editor;
 pub mod runtime;
 

@@ -115,6 +115,12 @@ pub enum BridgeError {
     CallFailed(String),
     #[error("{0}")]
     NotAvailableHeadless(String),
+    #[error("{0}")]
+    ResourceError(String),
+    #[error("{0}")]
+    AlreadyExists(String),
+    #[error("{0}")]
+    NoEditedScene(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -129,6 +135,9 @@ impl BridgeError {
             BridgeError::InvalidProperty(_) => "invalid_property",
             BridgeError::CallFailed(_) => "call_failed",
             BridgeError::NotAvailableHeadless(_) => "not_available_headless",
+            BridgeError::ResourceError(_) => "resource_error",
+            BridgeError::AlreadyExists(_) => "already_exists",
+            BridgeError::NoEditedScene(_) => "no_edited_scene",
             BridgeError::Internal(_) => "internal_error",
         }
     }
@@ -223,6 +232,10 @@ mod tests {
         assert!(!BridgeError::UnknownTool("x".into()).retryable());
         assert_eq!(BridgeError::InvalidArgs("bad".into()).code(), "invalid_args");
         assert_eq!(BridgeError::Internal("boom".into()).code(), "internal_error");
+        assert_eq!(BridgeError::ResourceError("x".into()).code(), "resource_error");
+        assert!(!BridgeError::ResourceError("x".into()).retryable());
+        assert_eq!(BridgeError::AlreadyExists("x".into()).code(), "already_exists");
+        assert_eq!(BridgeError::NoEditedScene("x".into()).code(), "no_edited_scene");
     }
 
     #[test]

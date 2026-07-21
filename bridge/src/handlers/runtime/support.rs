@@ -7,9 +7,10 @@
 
 use godot::classes::{Engine, Node, SceneTree, Window};
 use godot::prelude::*;
-use serde_json::Value;
 
 use crate::protocol::BridgeError;
+
+pub use crate::handlers::args::{optional_str, optional_u64, require_str};
 
 pub fn scene_tree() -> Result<Gd<SceneTree>, BridgeError> {
     Engine::singleton()
@@ -92,17 +93,3 @@ pub fn signal_names(node: &Gd<Node>) -> Vec<String> {
     names
 }
 
-pub fn require_str(args: &Value, key: &str) -> Result<String, BridgeError> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| BridgeError::InvalidArgs(format!("'{key}' is required and must be a string")))
-}
-
-pub fn optional_str(args: &Value, key: &str) -> Option<String> {
-    args.get(key).and_then(Value::as_str).map(str::to_string)
-}
-
-pub fn optional_u64(args: &Value, key: &str) -> Option<u64> {
-    args.get(key).and_then(Value::as_u64)
-}

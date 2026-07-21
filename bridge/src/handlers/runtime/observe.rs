@@ -1,17 +1,17 @@
 //! Observation handlers: screenshots, performance counters, and incremental log
 //! and error tailing (whitepaper sections 6.6 and 6.7).
 
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use godot::classes::performance::Monitor;
-use godot::classes::{DisplayServer, Image, Performance, ProjectSettings, RenderingServer};
+use godot::classes::{DisplayServer, Image, Performance, RenderingServer};
 use godot::prelude::*;
 use serde_json::{json, Value};
 
+use crate::base64;
 use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
 use crate::handlers::runtime::support::scene_root;
+use crate::log_tail;
 use crate::protocol::BridgeError;
 
 const SCREENSHOT_DEADLINE_FRAMES: u64 = 600;
@@ -121,7 +121,7 @@ impl ScreenshotPending {
             "format": self.format.name(),
             "width": image.get_width(),
             "height": image.get_height(),
-            "image_base64": base64_encode(buffer.as_slice()),
+            "image_base64": base64::encode(buffer.as_slice()),
         }))
     }
 }
@@ -197,83 +197,14 @@ fn resize_within(image: &mut Gd<Image>, max_dimension: i32) {
     image.resize(new_width, new_height);
 }
 
-fn log_file_path() -> Option<String> {
-    let settings = ProjectSettings::singleton();
-    let configured = settings.get_setting("debug/file_logging/log_path");
-    let path = if configured.is_nil() {
-        "user://logs/godot.log".to_string()
-    } else {
-        configured.to_string()
-    };
-    Some(settings.globalize_path(&path).to_string())
-}
-
 /// Read bytes appended to the engine log since `offset`, advancing it. Returns
 /// the new text and whether it was clipped to `max_bytes` (the tail is kept).
 fn read_new_log(offset: &AtomicU64, max_bytes: usize) -> (String, bool) {
-    let Some(path) = log_file_path() else {
+    let Some(path) = log_tail::log_file_path() else {
         return (String::new(), false);
     };
-    let Ok(mut file) = File::open(&path) else {
-        return (String::new(), false);
-    };
-    let len = file.metadata().map(|meta| meta.len()).unwrap_or(0);
-    let mut start = offset.load(Ordering::Relaxed);
-    if start > len {
-        // The log was rotated or truncated; restart from the beginning.
-        start = 0;
-    }
-    if start >= len {
-        offset.store(len, Ordering::Relaxed);
-        return (String::new(), false);
-    }
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return (String::new(), false);
-    }
-    let mut buffer = Vec::with_capacity((len - start) as usize);
-    if file.read_to_end(&mut buffer).is_err() {
-        return (String::new(), false);
-    }
-    offset.store(len, Ordering::Relaxed);
-
-    let truncated = buffer.len() > max_bytes;
-    if truncated {
-        let tail_start = buffer.len() - max_bytes;
-        buffer.drain(0..tail_start);
-    }
-    (String::from_utf8_lossy(&buffer).into_owned(), truncated)
-}
-
-/// Standard base64 (RFC 4648) encoding. Implemented inline to keep the bridge's
-/// dependency set minimal; only screenshot bytes flow through it.
-fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        out.push(ALPHABET[(triple >> 18) as usize & 0x3f] as char);
-        out.push(ALPHABET[(triple >> 12) as usize & 0x3f] as char);
-        out.push(if chunk.len() > 1 { ALPHABET[(triple >> 6) as usize & 0x3f] as char } else { '=' });
-        out.push(if chunk.len() > 2 { ALPHABET[triple as usize & 0x3f] as char } else { '=' });
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::base64_encode;
-
-    #[test]
-    fn base64_matches_known_vectors() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-    }
+    let start = offset.load(Ordering::Relaxed);
+    let (text, truncated, new_offset) = log_tail::read_log_range(&path, start, max_bytes);
+    offset.store(new_offset, Ordering::Relaxed);
+    (text, truncated)
 }
