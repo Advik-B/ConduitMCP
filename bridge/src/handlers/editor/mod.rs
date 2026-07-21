@@ -3,6 +3,7 @@
 //! game bridge online.
 
 pub mod play;
+pub mod resource;
 pub mod scene;
 pub mod script;
 pub mod support;
