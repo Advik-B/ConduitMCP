@@ -74,3 +74,66 @@ generated `return await Signal(get_node(path), signal)` snippet. Awaiting a
 signal yields its first argument, and the wait is bounded by the broker's
 per-request timeout rather than an in-snippet timeout. Connect, disconnect,
 emit, and list are direct synchronous calls.
+
+## Phase 3: editor bridge
+
+`EditorUndoRedoManager` exposes no `undo()`/`redo()`. Reach them via
+`get_history_undo_redo(get_object_history_id(object)).undo()`/`.redo()` on the
+returned `UndoRedo`.
+
+`add_do_method`/`add_undo_method` are panicking varcalls (they
+`unwrap_or_else(|e| panic!(...))` internally on failure). Use
+`try_add_do_method`/`try_add_undo_method`, and prefer `add_do_property`/
+`add_undo_property` (infallible) for plain property changes.
+
+`ClassDb::instantiate` returns `Variant`, not `Gd<T>`; every caller must
+`.try_to::<Gd<T>>()` and handle cast failure as a `ResourceError`.
+
+`EditorFileSystem::reimport_files` is documented as blocking, pumping the main
+loop internally while it runs; calling it risks re-entering the dispatcher
+while our own borrow is on the stack. Use non-blocking `scan()`/
+`scan_sources()` plus polling `is_scanning()` instead.
+
+`Object` has no public `set_script`/`get_script` in this gdext version (only
+`pub(crate) raw_set_script`/`raw_get_script`). `script` is reached through the
+generic dynamic property API (`add_do_property`/`add_undo_property(node,
+"script", variant)`), the same mechanism as any other property.
+
+UID dependent-reference reporting on `gd_file_move` is not implemented: no
+reverse-dependency query was found at the `EditorFileSystem`/`EditorInterface`
+level short of walking `EditorFileSystemDirectory` in more depth than this
+phase justifies. `gd_file_move` returns an empty `dependents` array with an
+explanatory note rather than silently claiming nothing references the old
+path.
+
+`debug/file_logging/enable_file_logging` is not honoured for `--editor`
+sessions in Godot 4.7.1, regardless of the project setting's value; only
+game/export runs write `user://logs/godot.log` on their own. The reliable
+mechanism for editor-mode log capture is the `--log-file <path>` launch
+argument, which `log_tail::log_file_path()` prefers over the project setting
+when present.
+
+The engine's log writer (editor or game) does not flush on a bounded
+real-time wait. `gd_script_validate` originally reloaded the script in the
+live editor process and tailed its own `--log-file` output, waiting up to
+several real seconds (confirmed both via dispatcher frame count and via a
+genuine `std::time::Instant` deadline) for the just-emitted diagnostic lines
+to appear on disk — they never did, even though a separate process reading
+the same file moments later saw them immediately. This points to Godot's file
+logger being buffered like C stdio (flushed on buffer-fill or process exit,
+not on any timer tied to frames or wall clock), which no in-process wait can
+force. The fix: `gd_script_validate` now parses the target script in a fresh,
+short-lived subprocess (`godot --headless --path <project> --script <path>
+--check-only`) and reads its captured stdout/stderr only after `try_wait`
+reports the process has exited, which guarantees a full flush. The subprocess
+has `CONDUIT_ENABLE`/`CONDUIT_SOCK`/`CONDUIT_RUNTIME_DIR` stripped from its
+environment so its own GDExtension init never attempts to bind a bridge
+socket.
+
+`EditorInterface::get_open_scenes()`/`get_scene_file_path()` do not reliably
+reflect a just-opened scene immediately after `open_scene_from_path` under
+headless `--editor` runs (both were tried as the readiness signal for
+`gd_scene_open` and neither became true within a generous polling budget).
+`get_edited_scene_root().is_ok()` — the same call `gd_scene_tree_get` itself
+makes — is ready immediately in practice and is what `gd_scene_open` now polls
+for.

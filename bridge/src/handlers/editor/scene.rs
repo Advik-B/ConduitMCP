@@ -14,7 +14,7 @@ use godot::global::Error as GdError;
 use godot::prelude::*;
 use serde_json::{json, Value};
 
-use crate::dispatcher::{FrameContext, HandlerOutcome};
+use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
 use crate::handlers::args::{optional_bool, optional_str, optional_u64, require_str};
 use crate::handlers::editor::support::{
     edited_scene_root, relative_path, resolve_editor_node, trigger_rescan, undo_redo, validate_project_path,
@@ -45,13 +45,51 @@ fn instantiate_node(type_name: &str) -> Result<Gd<Node>, BridgeError> {
         .map_err(|e| BridgeError::ResourceError(format!("failed to instantiate '{type_name}': {e}")))
 }
 
-pub fn open(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
-    HandlerOutcome::Done((|| {
-        let path = require_str(args, "path")?;
-        validate_project_path(&path)?;
-        EditorInterface::singleton().open_scene_from_path(path.as_str());
-        Ok(json!({ "path": path }))
-    })())
+/// Frames to wait for a scene to finish opening before giving up.
+/// `open_scene_from_path` returns before the new scene is necessarily ready:
+/// `get_edited_scene_root()` can still report the previous scene (or none)
+/// for a frame or more afterward, so this polls rather than assuming the
+/// call is synchronous.
+const SCENE_OPEN_DEADLINE_FRAMES: u64 = 600;
+
+pub fn open(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
+    let path = match require_str(args, "path") {
+        Ok(v) => v,
+        Err(e) => return HandlerOutcome::Done(Err(e)),
+    };
+    if let Err(e) = validate_project_path(&path) {
+        return HandlerOutcome::Done(Err(e));
+    }
+    EditorInterface::singleton().open_scene_from_path(path.as_str());
+    HandlerOutcome::Pending(Box::new(SceneOpenPending {
+        path,
+        deadline_frame: ctx.frame_index.saturating_add(SCENE_OPEN_DEADLINE_FRAMES),
+    }))
+}
+
+struct SceneOpenPending {
+    path: String,
+    deadline_frame: u64,
+}
+
+impl PendingOp for SceneOpenPending {
+    fn poll(&mut self, ctx: &FrameContext) -> Option<Result<Value, BridgeError>> {
+        // get_scene_file_path() and get_open_scenes() are tab-bar-backed and
+        // do not reliably populate under headless --editor runs. edited_scene_root()
+        // is the same call gd_scene_tree_get itself makes and is ready
+        // immediately after open_scene_from_path in practice; kept as a bounded
+        // poll only as cheap insurance, not because a real race was confirmed.
+        if edited_scene_root().is_ok() {
+            return Some(Ok(json!({ "path": self.path })));
+        }
+        if ctx.frame_index >= self.deadline_frame {
+            return Some(Err(BridgeError::Internal(format!(
+                "scene '{}' did not finish opening before the deadline",
+                self.path
+            ))));
+        }
+        None
+    }
 }
 
 pub fn create(args: &Value, ctx: &FrameContext) -> HandlerOutcome {

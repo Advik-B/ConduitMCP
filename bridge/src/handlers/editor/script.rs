@@ -7,18 +7,19 @@
 //! by name for the varcall path the undo manager would need anyway). Create is
 //! a file-creation handler, not undo-wrapped, mirroring `gd_resource_create`.
 
-use godot::classes::{GDScript, ResourceLoader, ResourceSaver, Script};
+use std::process::{Child, Command, Stdio};
+
+use godot::classes::{GDScript, Os, ProjectSettings, ResourceLoader, ResourceSaver, Script};
 use godot::global::Error as GdError;
 use godot::prelude::*;
 use serde_json::{json, Value};
 
-use crate::dispatcher::{FrameContext, HandlerOutcome};
+use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
 use crate::handlers::args::{optional_str, require_str};
 use crate::handlers::editor::support::{resolve_editor_node, trigger_rescan, undo_redo, validate_project_path};
-use crate::log_tail;
 use crate::protocol::BridgeError;
 
-const VALIDATE_LOG_MAX_BYTES: usize = 64 * 1024;
+const VALIDATE_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 
 pub fn create(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
     let prepared: Result<(String, String), BridgeError> = (|| {
@@ -91,66 +92,154 @@ pub fn detach(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     })())
 }
 
+/// Validates by parsing `path` in a fresh, short-lived Godot subprocess
+/// (`--check-only --script`) rather than reloading it in this long-running
+/// editor process and tailing its own log file. The live editor's log writer
+/// buffers output and only flushes on buffer-fill or process exit, never on a
+/// bounded wait: waiting several real seconds (confirmed both by dispatcher
+/// frame count and by a genuine `std::time::Instant` deadline) still saw zero
+/// new bytes for a diagnostic that a separate process could read moments
+/// later (`docs/api-gaps.md`). A subprocess sidesteps this entirely — all of
+/// its own buffers are flushed as a consequence of exiting, which we detect
+/// deterministically via `try_wait`, and `--check-only` is built for exactly
+/// this: parse-only, no scene or game execution.
 pub fn validate(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
-    HandlerOutcome::Done((|| {
-        let path = require_str(args, "path")?;
-        validate_project_path(&path)?;
+    let path = match require_str(args, "path") {
+        Ok(v) => v,
+        Err(e) => return HandlerOutcome::Done(Err(e)),
+    };
+    if let Err(e) = validate_project_path(&path) {
+        return HandlerOutcome::Done(Err(e));
+    }
 
-        // Local, freshly-captured offset: this must not share the game
-        // bridge's incremental log cursor, and must not accumulate across
-        // separate gd_script_validate calls.
-        let log_path = log_tail::log_file_path();
-        let start_offset = log_path
-            .as_deref()
-            .and_then(|p| std::fs::metadata(p).ok())
-            .map(|m| m.len())
-            .unwrap_or(0);
+    let godot_bin = Os::singleton().get_executable_path().to_string();
+    let project_path = ProjectSettings::singleton().globalize_path("res://").to_string();
+    let output_path = unique_check_output_path();
 
-        let loaded = ResourceLoader::singleton()
-            .load_ex(path.as_str())
-            .cache_mode(godot::classes::resource_loader::CacheMode::REPLACE)
-            .done();
+    let output_file = match std::fs::File::create(&output_path) {
+        Ok(f) => f,
+        Err(e) => {
+            return HandlerOutcome::Done(Err(BridgeError::Internal(format!(
+                "failed to create scratch file for script validation: {e}"
+            ))))
+        }
+    };
+    let stderr_file = match output_file.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = std::fs::remove_file(&output_path);
+            return HandlerOutcome::Done(Err(BridgeError::Internal(format!(
+                "failed to prepare scratch file for script validation: {e}"
+            ))));
+        }
+    };
 
-        let valid = match loaded.map(|r| r.try_cast::<Script>()) {
-            Some(Ok(mut script)) => script.reload() == GdError::OK,
-            _ => false,
-        };
+    let mut command = Command::new(&godot_bin);
+    command
+        .args(["--headless", "--path", project_path.as_str(), "--script", path.as_str(), "--check-only"])
+        // Never let the checked-out subprocess's own GDExtension init try to
+        // bind a bridge socket; it inherits these otherwise (whitepaper
+        // section 6.3's opt-in gate covers the non-editor case, but clearing
+        // them here means the gate is never even consulted).
+        .env_remove("CONDUIT_ENABLE")
+        .env_remove("CONDUIT_SOCK")
+        .env_remove("CONDUIT_RUNTIME_DIR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(output_file))
+        .stderr(Stdio::from(stderr_file));
 
-        let diagnostics = if valid {
-            Vec::new()
-        } else {
-            let text = log_path
-                .as_deref()
-                .map(|p| log_tail::read_log_range(p, start_offset, VALIDATE_LOG_MAX_BYTES).0)
-                .unwrap_or_default();
-            extract_diagnostics(&text, &path)
-        };
+    let child = match command.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = std::fs::remove_file(&output_path);
+            return HandlerOutcome::Done(Err(BridgeError::Internal(format!(
+                "failed to spawn godot for script validation: {e}"
+            ))));
+        }
+    };
 
-        Ok(json!({ "path": path, "valid": valid, "diagnostics": diagnostics }))
-    })())
+    HandlerOutcome::Pending(Box::new(ScriptCheckPending { path, child, output_path }))
 }
 
-/// Best-effort line-number extraction from the engine log's error output
-/// around a reload, matching lines that mention the script's path (typically
-/// `res://foo.gd:12 - Parse Error: ...`) or otherwise look like an error.
+fn unique_check_output_path() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("conduit-script-check-{}-{n}.log", std::process::id()))
+}
+
+struct ScriptCheckPending {
+    path: String,
+    child: Child,
+    output_path: std::path::PathBuf,
+}
+
+impl PendingOp for ScriptCheckPending {
+    fn poll(&mut self, _ctx: &FrameContext) -> Option<Result<Value, BridgeError>> {
+        let status = match self.child.try_wait() {
+            Ok(Some(status)) => status,
+            Ok(None) => return None,
+            Err(e) => {
+                let _ = std::fs::remove_file(&self.output_path);
+                return Some(Err(BridgeError::Internal(format!(
+                    "failed to wait for script validation subprocess: {e}"
+                ))));
+            }
+        };
+
+        let mut bytes = std::fs::read(&self.output_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&self.output_path);
+
+        if status.success() {
+            return Some(Ok(json!({ "path": self.path, "valid": true, "diagnostics": [] })));
+        }
+
+        if bytes.len() > VALIDATE_OUTPUT_MAX_BYTES {
+            bytes.drain(0..bytes.len() - VALIDATE_OUTPUT_MAX_BYTES);
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let diagnostics = extract_diagnostics(&text, &self.path);
+        Some(Ok(json!({ "path": self.path, "valid": false, "diagnostics": diagnostics })))
+    }
+}
+
+/// Best-effort diagnostic extraction from the engine log's error output
+/// around a reload. Godot typically emits a message line ("SCRIPT ERROR:
+/// Parse Error: ...") followed by one or more "   at: <fn> (<path>:<line>)"
+/// continuation lines; this pairs each message with the line number from the
+/// first continuation line naming the validated script, if any.
 fn extract_diagnostics(log_text: &str, path: &str) -> Vec<Value> {
+    let lines: Vec<&str> = log_text.lines().collect();
     let mut diagnostics = Vec::new();
-    for line in log_text.lines() {
-        let mentions_path = line.contains(path);
-        if !mentions_path && !line.to_ascii_lowercase().contains("error") {
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let is_continuation = line.trim_start().starts_with("at:");
+        if is_continuation || !line.to_ascii_lowercase().contains("error") {
+            i += 1;
             continue;
         }
-        let line_number = mentions_path
-            .then(|| line.find(path))
-            .flatten()
-            .and_then(|start| line[start + path.len()..].strip_prefix(':'))
-            .and_then(|after| {
-                let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-                digits.parse::<u64>().ok()
-            });
+
+        let mut line_number = None;
+        let mut next = i + 1;
+        while next < lines.len() && lines[next].trim_start().starts_with("at:") {
+            if let Some(n) = line_number_after_path(lines[next], path) {
+                line_number = Some(n);
+                break;
+            }
+            next += 1;
+        }
         diagnostics.push(json!({ "line": line_number, "message": line.trim() }));
+        i = next.max(i + 1);
     }
     diagnostics
+}
+
+fn line_number_after_path(line: &str, path: &str) -> Option<u64> {
+    let start = line.find(path)?;
+    let after = line[start + path.len()..].strip_prefix(':')?;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u64>().ok()
 }
 
 #[cfg(test)]
@@ -202,8 +291,9 @@ mod tests {
     }
 
     #[test]
-    fn extract_diagnostics_finds_line_number_after_path() {
-        let log = "some unrelated line\nres://broken.gd:2 - Parse Error: Expected \")\"\nanother line";
+    fn extract_diagnostics_pairs_message_with_line_from_at_continuation() {
+        // The real format Godot 4.7 emits for a GDScript parse error.
+        let log = "SCRIPT ERROR: Parse Error: Expected parameter name.\n   at: GDScript::reload (res://broken.gd:2)\n";
         let diagnostics = extract_diagnostics(log, "res://broken.gd");
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0]["line"], 2);
@@ -211,7 +301,23 @@ mod tests {
     }
 
     #[test]
-    fn extract_diagnostics_falls_back_to_null_line_for_generic_error_lines() {
+    fn extract_diagnostics_handles_multiple_errors_and_a_leading_load_failure() {
+        let log = concat!(
+            "SCRIPT ERROR: Parse Error: Expected parameter name.\n",
+            "   at: GDScript::reload (res://broken.gd:2)\n",
+            "ERROR: Failed to load script \"res://broken.gd\" with error \"Parse error\".\n",
+            "   at: load (modules/gdscript/gdscript_resource_format.cpp:46)\n",
+        );
+        let diagnostics = extract_diagnostics(log, "res://broken.gd");
+        assert_eq!(diagnostics.len(), 2);
+        assert_eq!(diagnostics[0]["line"], 2);
+        // The second error's "at:" line does not mention the script path, so
+        // no line number is attributed to it.
+        assert!(diagnostics[1]["line"].is_null());
+    }
+
+    #[test]
+    fn extract_diagnostics_falls_back_to_null_line_when_no_at_continuation_names_the_path() {
         let log = "SCRIPT ERROR: something went wrong";
         let diagnostics = extract_diagnostics(log, "res://broken.gd");
         assert_eq!(diagnostics.len(), 1);

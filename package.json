@@ -8,10 +8,13 @@
   "scripts": {
     "setup": "bun scripts/setup.ts",
     "stress": "bun tests/evals/phase1_stress.ts",
-    "phase2": "bun tests/evals/phase2_runtime.ts"
+    "phase2": "bun tests/evals/phase2_runtime.ts",
+    "phase3": "bun tests/evals/phase3_editor.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "@types/bun": "^1.3.14",
+    "@types/node": "^26.1.1"
   }
 }

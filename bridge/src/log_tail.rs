@@ -8,12 +8,21 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
-use godot::classes::ProjectSettings;
+use godot::classes::{Os, ProjectSettings};
 use godot::prelude::*;
 
-/// The current process's own engine log path (`user://logs/godot.log` unless
-/// reconfigured), globalized to an absolute filesystem path.
+/// The current process's own engine log path. Prefers an explicit `--log-file
+/// <path>` launch argument, since `debug/file_logging/enable_file_logging` is
+/// not honoured for `--editor` sessions in Godot 4.7 regardless of the project
+/// setting's value (confirmed empirically; recorded in `docs/api-gaps.md`) —
+/// only game/export runs default to writing `user://logs/godot.log` on their
+/// own. Falls back to the project-setting-derived path (`user://logs/godot.log`
+/// unless reconfigured), globalized to an absolute filesystem path, which is
+/// what actually works for the game bridge without any launch flag.
 pub(crate) fn log_file_path() -> Option<String> {
+    if let Some(path) = log_file_path_from_cmdline() {
+        return Some(path);
+    }
     let settings = ProjectSettings::singleton();
     let configured = settings.get_setting("debug/file_logging/log_path");
     let path = if configured.is_nil() {
@@ -22,6 +31,22 @@ pub(crate) fn log_file_path() -> Option<String> {
         configured.to_string()
     };
     Some(settings.globalize_path(&path).to_string())
+}
+
+fn log_file_path_from_cmdline() -> Option<String> {
+    let args = Os::singleton().get_cmdline_args();
+    let slice = args.as_slice();
+    let mut iter = slice.iter();
+    while let Some(arg) = iter.next() {
+        let arg = arg.to_string();
+        if arg == "--log-file" {
+            return iter.next().map(|value| value.to_string());
+        }
+        if let Some(value) = arg.strip_prefix("--log-file=") {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 /// Read the bytes appended to the log at `path` since `start_offset`. Returns
