@@ -298,3 +298,21 @@ without showing the popup, and Close Scene on a dirty scene raises a
 Save & Close). The node names in the menu path carry unstable `@Class@NNNN`
 suffixes, so tools and the eval locate the menu by finding `PopupMenu`s and
 matching the item text rather than by a fixed path.
+
+### Editor pixel input reaches the canvas via push_input; scene tabs do not switch under headless --editor
+
+The phase-6 tier-3 tools (`gd_editor_pixel_move`/`click`/`drag`) synthesise input
+through `Viewport::push_input` on the editor base-control viewport, as the
+whitepaper (section 6.8) prefers. This was verified to drive both editor chrome
+and the 2D `CanvasItemEditorViewport`: a synthesised click at a node's screen
+position selects it, so no `Input::parse_input_event` fallback was needed.
+
+A separate observed limitation surfaced while building the phase-6 acceptance:
+under a headless (`--editor` on Xvfb) run, `EditorInterface::open_scene_from_path`
+(`gd_scene_open`) opens a scene in a background tab but does not reliably make it
+the active edited scene, so `get_edited_scene_root` keeps returning the
+previously current scene. This is the same tab-bar-under-headless weakness noted
+for `get_open_scenes` in `scene.rs`. The workaround, where a specific scene must
+be the current one under headless, is to pass the scene path as a startup
+argument to the editor (`godot --editor --path <proj> res://scene.tscn`) rather
+than switching after launch; the phase-6 eval does this.

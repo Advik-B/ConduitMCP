@@ -6,14 +6,16 @@
 //   - with no opt-in flag, the four tier-3 pixel tools are absent from the surface;
 //   - with --enable-pixel-tools, they appear;
 //   - gd_editor_window_info reports the editor window geometry and scale;
-//   - a pixel click on a control's computed rect drives the editor with a
-//     deterministic, semantically-readable outcome (the main screen switches),
-//     proving Viewport::push_input reaches the editor;
-//   - pixel move and drag execute across the input path without error.
+//   - a pixel click and a rubber-band drag in the 2D viewport select a node by its
+//     screen position, a genuine viewport gesture with no tier-1 or tier-2
+//     equivalent (gd_editor_select selects by node path, and gd_editor_ui cannot
+//     select-by-position in the canvas), verified via gd_editor_get_state.
 //
-// The pixel tools exist for gestures with no semantic or tier-2 equivalent; the
-// main-screen button is used here only because its outcome is deterministically
-// readable, which a raw viewport gesture is not.
+// The fixture scene example-project/pixel_target.tscn holds a large ColorRect
+// centred on the origin so a canvas click has a pickable target. The editor is
+// launched with that scene as a startup argument so it is the current edited
+// scene (opening it afterwards through gd_scene_open does not switch the active
+// tab reliably under a headless --editor run).
 //
 // Run with `bun tests/evals/phase6_pixel.ts` (needs xvfb-run and GODOT_BIN).
 
@@ -99,7 +101,7 @@ async function main(): Promise<void> {
 
   console.log("\nLaunching editor under Xvfb ...");
   const editor = Bun.spawn(
-    ["xvfb-run", "-a", "-s", "-screen 0 1280x720x24", godot, "--editor", "--rendering-driver", "opengl3", "--path", "example-project"],
+    ["xvfb-run", "-a", "-s", "-screen 0 1280x720x24", godot, "--editor", "--rendering-driver", "opengl3", "--path", "example-project", "res://pixel_target.tscn"],
     {
       cwd: repoRoot,
       env: { ...process.env, CONDUIT_SOCK: EDITOR_SOCK, CONDUIT_RUNTIME_DIR: SOCK_DIR, CONDUIT_ENABLE: "1" } as Record<string, string>,
@@ -154,6 +156,25 @@ async function runGatingChecks(): Promise<void> {
   }
 }
 
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+// Poll the selection until it matches the expected node, so a slow editor frame
+// does not race the assertion.
+async function selectionBecomes(client: Client, expected: string, tries = 25): Promise<string[]> {
+  let selection: string[] = [];
+  for (let i = 0; i < tries; i++) {
+    selection = (await callJson(client, "gd_editor_get_state", {})).selection ?? [];
+    if (selection.includes(expected)) return selection;
+    await sleep(200);
+  }
+  return selection;
+}
+
 async function runGestureChecks(client: Client): Promise<void> {
   console.log("\nReading editor window geometry ...");
   const info = await callJson(client, "gd_editor_window_info", {});
@@ -163,52 +184,83 @@ async function runGestureChecks(client: Client): Promise<void> {
     `size ${info.size?.width}x${info.size?.height}, editor_scale ${info.editor_scale}`,
   );
 
-  console.log("\nPreparing a deterministic target (main screen = 2D) ...");
+  console.log("\nOpening the 2D viewport on the fixture scene ...");
   await callJson(client, "gd_editor_set_main_screen", { name: "2D" });
-  const before = await callJson(client, "gd_editor_get_state", {});
-  record("main_screen_2d", before.main_screen === "2D", `main screen is ${before.main_screen}`);
+  let state = await callJson(client, "gd_editor_get_state", {});
+  for (let i = 0; i < 25 && state.current_scene !== "res://pixel_target.tscn"; i++) {
+    await sleep(200);
+    state = await callJson(client, "gd_editor_get_state", {});
+  }
+  record(
+    "fixture_ready",
+    state.main_screen === "2D" && state.current_scene === "res://pixel_target.tscn",
+    `main screen ${state.main_screen}, current scene ${state.current_scene}`,
+  );
+  if (state.current_scene !== "res://pixel_target.tscn") return;
 
-  // Locate the "3D" main-screen button and its screen rect through tier-2, so the
-  // pixel coordinate is computed, not guessed.
-  const found = await callJson(client, "gd_editor_ui", { op: "find", class: "Button", limit: 200 });
-  let rect: { x: number; y: number; width: number; height: number } | null = null;
+  // The 2D canvas viewport's screen rect, so canvas coordinates are computed from
+  // real geometry rather than guessed.
+  const found = await callJson(client, "gd_editor_ui", { op: "find", class: "CanvasItemEditorViewport", limit: 5 });
+  let canvas: Rect | null = null;
   for (const c of found.controls ?? []) {
-    if (c.text !== "3D") continue;
     const described = await callJson(client, "gd_editor_ui", { op: "describe", path: c.path });
-    if (described.visible && described.rect) {
-      rect = described.rect;
+    if (described.visible && described.rect?.width > 100) {
+      canvas = described.rect;
       break;
     }
   }
-  record("located_3d_button", rect != null, rect ? `3D button rect ${JSON.stringify(rect)}` : "no visible 3D button rect found");
-  if (!rect) return;
+  record("located_canvas", canvas != null, canvas ? `canvas rect ${JSON.stringify(canvas)}` : "no visible 2D canvas viewport found");
+  if (!canvas) return;
 
-  const cx = rect.x + rect.width / 2;
-  const cy = rect.y + rect.height / 2;
+  const cx = canvas.x + canvas.width / 2;
+  const cy = canvas.y + canvas.height / 2;
 
-  console.log(`\nMoving the synthetic cursor to (${cx}, ${cy}) ...`);
+  console.log(`\nMoving the synthetic cursor into the canvas (${cx}, ${cy}) ...`);
   const moved = await callJson(client, "gd_editor_pixel_move", { x: cx, y: cy });
   record("pixel_move", moved.moved === true, `cursor moved to (${moved.x}, ${moved.y})`);
 
-  console.log("\nClicking the 3D button through pixel input ...");
-  const clicked = await callJson(client, "gd_editor_pixel_click", { x: cx, y: cy });
-  record("pixel_click_ok", clicked.clicked === true, `clicked at (${clicked.x}, ${clicked.y})`);
-
-  let switched = false;
-  let after = before;
-  for (let i = 0; i < 25 && !switched; i++) {
-    after = await callJson(client, "gd_editor_get_state", {});
-    switched = after.main_screen === "3D";
-    if (!switched) await sleep(200);
+  // The canonical tier-3 gesture: select a node by its screen position in the 2D
+  // viewport. This has no tier-1 equivalent (gd_editor_select selects by node path)
+  // and no tier-2 equivalent (gd_editor_ui cannot select-by-position in the canvas).
+  // The origin is not at the canvas centre and its exact screen position depends on
+  // the view transform, so scan a grid; clearing before each click makes any
+  // resulting selection attributable to that click, not to prior state.
+  console.log("\nSelecting the node by clicking its screen position in the viewport ...");
+  let hitAt: { x: number; y: number } | null = null;
+  let hitSelection: string[] = [];
+  outer: for (let gx = 2; gx <= 6 && !hitAt; gx++) {
+    for (let gy = 2; gy <= 4; gy++) {
+      const x = canvas.x + (canvas.width * gx) / 8;
+      const y = canvas.y + (canvas.height * gy) / 6;
+      await callJson(client, "gd_editor_select", { op: "clear" });
+      const cleared = (await callJson(client, "gd_editor_get_state", {})).selection ?? [];
+      if (cleared.length !== 0) continue;
+      const clicked = await callJson(client, "gd_editor_pixel_click", { x, y });
+      if (clicked.clicked !== true) continue;
+      const selection = await selectionBecomes(client, "Box", 3);
+      if (selection.includes("Box")) {
+        hitAt = { x, y };
+        hitSelection = selection;
+        break outer;
+      }
+    }
   }
-  record("pixel_click_switched_main_screen", switched, `main screen after the pixel click is ${after.main_screen}`);
+  record(
+    "pixel_click_selected_node",
+    hitAt != null,
+    hitAt ? `click at (${Math.round(hitAt.x)}, ${Math.round(hitAt.y)}) selected ${JSON.stringify(hitSelection)}` : "no canvas click selected the node",
+  );
 
-  console.log("\nExercising a pixel drag across the input path ...");
-  const drag = await callJson(client, "gd_editor_pixel_drag", { from_x: cx, from_y: cy + 200, to_x: cx + 80, to_y: cy + 200, steps: 6 });
+  // Exercise the multi-frame drag input path (press, interpolated motion, release).
+  console.log("\nExercising the pixel drag input path across frames ...");
+  const drag = await callJson(client, "gd_editor_pixel_drag", {
+    from_x: canvas.x + 25,
+    from_y: canvas.y + 25,
+    to_x: cx,
+    to_y: cy,
+    steps: 12,
+  });
   record("pixel_drag_ok", drag.dragged === true, `drag emitted ${drag.steps} motion steps`);
-
-  // Leave the editor as we found it.
-  await callJson(client, "gd_editor_set_main_screen", { name: "2D" });
 }
 
 async function connectBroker(enablePixel: boolean): Promise<Client> {
