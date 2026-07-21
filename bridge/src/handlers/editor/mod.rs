@@ -8,6 +8,7 @@ pub mod debug;
 pub mod editor_state;
 pub mod files;
 pub mod import_export;
+pub mod pixel;
 pub mod play;
 pub mod project;
 pub mod resource;

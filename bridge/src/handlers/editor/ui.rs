@@ -229,6 +229,13 @@ fn control_summary(node: &Gd<Node>) -> Value {
     });
     if let Ok(control) = node.clone().try_cast::<Control>() {
         entry["visible"] = json!(control.is_visible());
+        let rect = control.get_global_rect();
+        entry["rect"] = json!({
+            "x": rect.position.x,
+            "y": rect.position.y,
+            "width": rect.size.x,
+            "height": rect.size.y,
+        });
     }
     if let Some(text) = node_text(node) {
         entry["text"] = json!(text);
