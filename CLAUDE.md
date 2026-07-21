@@ -28,6 +28,7 @@ Follow whitepaper section 11 exactly (`bridge/` Rust cdylib, `broker/` TypeScrip
 - Bridge: `cargo build` in `bridge/`, `cargo test` for unit tests, `cargo clippy -- -D warnings` before declaring work done.
 - Broker: `npm ci` and `npm test` in `broker/`.
 - Integration tests launch Godot headless against `example-project/`; the Godot binary path comes from `GODOT_BIN`. If it is unset, ask rather than guessing.
+- Cross-platform: the project builds and its acceptance runners pass on Windows, macOS, and Linux. The broker-to-bridge transport is per-OS (Unix socket, Windows named pipe, opt-in loopback TCP) and the eval runners go through `tests/evals/harness.ts` for all host-specific behaviour (display, process cleanup, endpoint discovery). Display tooling (Xvfb) is Linux-only; Windows and macOS render natively. Platform specifics are in `docs/api-gaps.md`.
 
 ## Code style
 

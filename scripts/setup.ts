@@ -22,7 +22,12 @@ async function main(): Promise<void> {
   console.log("Setup complete.");
   console.log(`Godot binary: ${godotBin}`);
   console.log(`Add to your shell for this session:`);
-  console.log(`  export GODOT_BIN=${godotBin}`);
+  if (process.platform === "win32") {
+    console.log(`  $env:GODOT_BIN="${godotBin}"   (PowerShell)`);
+    console.log(`  set GODOT_BIN=${godotBin}   (cmd)`);
+  } else {
+    console.log(`  export GODOT_BIN=${godotBin}`);
+  }
 }
 
 async function ensureGodot(): Promise<string> {
@@ -30,13 +35,6 @@ async function ensureGodot(): Promise<string> {
   if (preset && existsSync(preset)) {
     console.log(`Using preset GODOT_BIN: ${preset}`);
     return preset;
-  }
-
-  if (process.platform !== "linux" || process.arch !== "x64") {
-    throw new Error(
-      `Automated Godot download supports linux x64 only; got ${process.platform}/${process.arch}. ` +
-        `Set GODOT_BIN to a Godot 4.4+ binary and re-run.`,
-    );
   }
 
   mkdirSync(toolsDir, { recursive: true });
@@ -48,7 +46,7 @@ async function ensureGodot(): Promise<string> {
   }
 
   const tag = await resolveLatestTag();
-  const asset = `Godot_v${tag}_linux.x86_64`;
+  const asset = godotAssetName(tag);
   const url = `https://github.com/godotengine/godot/releases/download/${tag}/${asset}.zip`;
   const zipPath = join(toolsDir, `${asset}.zip`);
 
@@ -56,17 +54,56 @@ async function ensureGodot(): Promise<string> {
   await download(url, zipPath);
 
   console.log("Extracting ...");
-  await run(["unzip", "-o", zipPath, "-d", toolsDir]);
+  await extract(zipPath, toolsDir);
 
   const binary = findGodotBinary();
   if (!binary) {
     throw new Error(`Extraction did not yield a Godot binary in ${toolsDir}`);
   }
-  chmodSync(binary, 0o755);
+  if (process.platform !== "win32") {
+    chmodSync(binary, 0o755);
+  }
 
   const version = await capture([binary, "--version"]);
   console.log(`Installed Godot: ${version.trim()}`);
   return binary;
+}
+
+// The GitHub release asset base name (without the .zip) for the host platform.
+// Godot ships one editor archive per platform (whitepaper targets 4.4+).
+function godotAssetName(tag: string): string {
+  const platform = process.platform;
+  const arch = process.arch;
+  if (platform === "linux" && arch === "x64") {
+    return `Godot_v${tag}_linux.x86_64`;
+  }
+  if (platform === "win32" && arch === "x64") {
+    return `Godot_v${tag}_win64.exe`;
+  }
+  if (platform === "darwin") {
+    return `Godot_v${tag}_macos.universal`;
+  }
+  throw new Error(
+    `Automated Godot download supports linux x64, windows x64, and macOS; got ${platform}/${arch}. ` +
+      `Set GODOT_BIN to a Godot 4.4+ binary and re-run.`,
+  );
+}
+
+// Extract the release archive. Linux and macOS use unzip (both ship it); Windows
+// uses PowerShell's Expand-Archive, since bsdtar there parses the `C:` drive
+// letter of the archive path as a remote host. All need no extra install.
+async function extract(zipPath: string, dir: string): Promise<void> {
+  if (process.platform === "win32") {
+    await run([
+      "powershell",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${dir}' -Force`,
+    ]);
+  } else {
+    await run(["unzip", "-o", zipPath, "-d", dir]);
+  }
 }
 
 async function resolveLatestTag(): Promise<string> {
@@ -94,9 +131,18 @@ function findGodotBinary(): string | null {
   if (!existsSync(toolsDir)) {
     return null;
   }
-  const match = readdirSync(toolsDir).find(
-    (name) => name.startsWith("Godot_v") && name.endsWith("linux.x86_64"),
-  );
+  if (process.platform === "darwin") {
+    // The macOS archive extracts to an app bundle rather than a bare binary.
+    const bundled = join(toolsDir, "Godot.app", "Contents", "MacOS", "Godot");
+    return existsSync(bundled) ? bundled : null;
+  }
+  const matches = (name: string): boolean => {
+    if (process.platform === "win32") {
+      return name.startsWith("Godot_v") && name.endsWith(".exe") && !name.includes("_console");
+    }
+    return name.startsWith("Godot_v") && name.endsWith("linux.x86_64");
+  };
+  const match = readdirSync(toolsDir).find(matches);
   return match ? join(toolsDir, match) : null;
 }
 

@@ -41,13 +41,62 @@ Tagging the matrix/transform types is follow-up work.
 (`Array<Variant>`). `Object::get_property_list` and friends return
 `Array<VarDictionary>`.
 
-## Local socket path length
+## Local socket path length (Unix)
 
-Unix domain socket paths must fit `sun_path` (~108 bytes). The runtime directory
-holding the endpoints (`CONDUIT_RUNTIME_DIR`, default the system temp dir) must
-therefore be short; a deeply nested directory makes the bind fail with
-"local socket name length exceeds capacity of sun_path". The default `/tmp` is
-fine; the acceptance harness uses `/tmp/conduit-p2`.
+Unix domain socket paths must fit `sun_path` (~108 bytes on Linux, ~104 on
+macOS). The runtime directory holding the endpoints (`CONDUIT_RUNTIME_DIR`,
+default the system temp dir) must therefore be short; a deeply nested directory
+makes the bind fail with "local socket name length exceeds capacity of
+sun_path". Linux `/tmp` is fine; on macOS the default temp dir (`/var/folders/.../T/`)
+runs long, so the acceptance harness deliberately roots its runtime dir at `/tmp`.
+This limit does not apply on Windows, whose transport is a named pipe.
+
+## Cross-platform transport: Windows named pipes need a two-thread serve
+
+The broker-to-bridge transport is per-platform: a Unix-domain filesystem socket
+on Linux/macOS, a named pipe (`\\.\pipe\conduit-{role}-{hash}`) on Windows, both
+via the `interprocess` crate, selected in `bridge/src/transport/ipc.rs`. Node/Bun
+`net` on Windows cannot connect to an AF_UNIX filesystem socket (it maps IPC
+paths to named pipes), so the Windows path must use `GenericNamespaced`, not
+`GenericFilePath`.
+
+The non-obvious constraint: `interprocess`'s `set_nonblocking(true)` on a Windows
+named-pipe stream sets the legacy `PIPE_NOWAIT` mode, which Microsoft documents
+as broken for duplex I/O. Empirically (a Bun<->interprocess round-trip on
+Windows), non-blocking duplex fails immediately (`EPIPE`/`peer closed`) while
+blocking duplex is reliable. The single-thread non-blocking serve loop that Unix
+uses therefore cannot run over named pipes.
+
+Resolution: the Windows serve path (`serve_split`, cfg-gated) uses blocking I/O
+with `Stream::split()` and the read and write halves on separate threads -- a
+reader parked in a blocking read feeding `inbound_tx`, and a writer draining
+`outbound_rx`/`event_rx` with blocking writes. Backpressure `busy` responses are
+routed from the reader to the writer over an internal channel rather than written
+to the pipe directly (only one thread may write). This preserves the
+write-while-blocked-on-read property that deferred `await` completions and
+debugger events require, validated by the phase 1 stress acceptance on Windows.
+The proven Unix non-blocking loop is left unchanged. An opt-in loopback TCP
+fallback (`CONDUIT_TCP`) exists for the editor connection.
+
+One shutdown caveat: a Windows reader thread parked in a blocking read is
+detached, not joined, so `Listener::stop()` never hangs; it ends when the peer
+disconnects or the process exits. This is fine for the editor-exit and
+process-exit cases that actually occur.
+
+## Windows debug pack export cannot include the out-of-project bridge library
+
+The example project's `.gdextension` references the built library outside the
+project tree (`res://../target/{debug,release}/conduit.dll`) so the build output
+need not be copied into the project. Observed: on Linux the *debug* preset pack
+export (which includes the bridge) succeeds; on Windows it fails with
+`Failed to open 'S:/.../example-project/../target/debug/~conduit.dll'` while
+packing that native library. The root cause was not isolated -- candidates are
+Godot 4.7.1's handling of an out-of-project (`res://../`) library path on Windows
+and Windows' locking of the DLL while the exporting editor has it loaded; only
+the failure was reproduced, not the mechanism. The *release* preset excludes the
+bridge via `exclude_filter`, so it exports correctly on every platform and still
+proves the whitepaper section 15 exclusion property. The phase 4 acceptance
+records the debug-pack step as a known Windows limitation rather than failing.
 
 ## Rendering and screenshots need a real display
 

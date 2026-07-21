@@ -8,6 +8,8 @@
 
 import net from "node:net";
 
+import type { Endpoint } from "./endpoint.ts";
+import { endpointKey } from "./endpoint.ts";
 import { encodeFrame, FrameParser } from "./framing.ts";
 
 export interface BridgeErrorPayload {
@@ -59,7 +61,7 @@ interface Pending {
 }
 
 export interface BridgeClientOptions {
-  socketPath: string;
+  endpoint: Endpoint;
   defaultTimeoutMs?: number;
 }
 
@@ -70,7 +72,7 @@ export class BridgeClient {
   private readonly parser = new FrameParser();
   private readonly pending = new Map<number, Pending>();
   private nextId = 1;
-  private readonly socketPath: string;
+  private readonly endpoint: Endpoint;
   private readonly defaultTimeoutMs: number;
 
   private hello: Hello | null = null;
@@ -80,13 +82,22 @@ export class BridgeClient {
   onClose: (() => void) | null = null;
 
   constructor(options: BridgeClientOptions) {
-    this.socketPath = options.socketPath;
+    this.endpoint = options.endpoint;
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  /** A stable string identifier for this client's endpoint, for logs and tracking. */
+  endpointId(): string {
+    return endpointKey(this.endpoint);
   }
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
+      // net.createConnection takes a path/pipe string or a {host,port} object.
+      const socket =
+        typeof this.endpoint === "string"
+          ? net.createConnection(this.endpoint)
+          : net.createConnection(this.endpoint.port, this.endpoint.host);
       socket.once("connect", () => {
         this.socket = socket;
         resolve();

@@ -35,6 +35,24 @@ export class FrameParser {
   }
 }
 
+// Canonicalise a project path so the broker and the bridge derive the same
+// endpoint hash from it. Must match the Rust `canonical_project_key`: forward
+// slashes, no trailing slash, and case-folded on Windows (its filesystem is
+// case-insensitive, so `globalize_path` and CONDUIT_PROJECT can disagree on
+// drive-letter case).
+export function canonicalProjectKey(input: string): string {
+  let key = input.replace(/\\/g, "/");
+  while (key.length > 1 && key.endsWith("/")) {
+    key = key.slice(0, -1);
+  }
+  // Case-fold on case-insensitive filesystems (Windows, and macOS by default),
+  // matching the Rust canonical_project_key so both ends derive the same hash.
+  if (process.platform === "win32" || process.platform === "darwin") {
+    key = key.toLowerCase();
+  }
+  return key;
+}
+
 // FNV-1a over the project path, low 32 bits as 8 hex chars. Must match the
 // Rust `short_hash` so both ends derive the same default endpoint name.
 export function shortHash(input: string): string {

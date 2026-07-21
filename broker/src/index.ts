@@ -7,15 +7,14 @@
 // logging goes to stderr (whitepaper section 7.1).
 
 import os from "node:os";
-import { join } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
 import { BridgeManager } from "./bridge-manager.ts";
+import { type Endpoint, editorEndpoint, editorEndpointFromOverride, endpointKey } from "./endpoint.ts";
 import { EventRing } from "./events.ts";
-import { shortHash } from "./framing.ts";
 import { registerEditorAssetsTools } from "./tools/editor-assets.ts";
 import { registerEditorCollabTools } from "./tools/editor-collab.ts";
 import { registerEditorDebugTools } from "./tools/editor-debug.ts";
@@ -46,7 +45,7 @@ function log(message: string): void {
 interface Config {
   runtimeDir: string;
   projectPath: string | null;
-  editorSocketPath: string;
+  editorEndpoint: Endpoint;
   enablePixelTools: boolean;
 }
 
@@ -58,15 +57,18 @@ function hasCliFlag(name: string): boolean {
 function resolveConfig(): Config {
   const runtimeDir = process.env.CONDUIT_RUNTIME_DIR || os.tmpdir();
   const projectPath = process.env.CONDUIT_PROJECT ?? null;
-  const editorSocketPath =
-    process.env.CONDUIT_SOCK ??
-    (projectPath ? join(runtimeDir, `conduit-editor-${shortHash(projectPath)}.sock`) : null);
-  if (!editorSocketPath) {
-    throw new Error("set CONDUIT_SOCK or CONDUIT_PROJECT so the broker can locate the editor bridge socket");
+  const override = process.env.CONDUIT_SOCK;
+  const resolvedEndpoint: Endpoint | null = override
+    ? editorEndpointFromOverride(override)
+    : projectPath
+      ? editorEndpoint(runtimeDir, projectPath)
+      : null;
+  if (!resolvedEndpoint) {
+    throw new Error("set CONDUIT_SOCK or CONDUIT_PROJECT so the broker can locate the editor bridge");
   }
   // CLI flags take precedence over environment variables (whitepaper section 15).
   const enablePixelTools = hasCliFlag("--enable-pixel-tools") || !!process.env.CONDUIT_ENABLE_PIXEL_TOOLS;
-  return { runtimeDir, projectPath, editorSocketPath, enablePixelTools };
+  return { runtimeDir, projectPath, editorEndpoint: resolvedEndpoint, enablePixelTools };
 }
 
 /** Tool-surface options resolved from configuration. */
@@ -361,14 +363,14 @@ async function main(): Promise<void> {
   });
 
   const manager = new BridgeManager({
-    editorSocketPath: config.editorSocketPath,
+    editorEndpoint: config.editorEndpoint,
     runtimeDir: config.runtimeDir,
     projectPath: config.projectPath,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     events,
   });
 
-  log(`connecting to editor bridge at ${config.editorSocketPath}`);
+  log(`connecting to editor bridge at ${endpointKey(config.editorEndpoint)}`);
   const hello = await manager.connectEditor();
   log(`connected to editor bridge (engine ${hello.engine_version})`);
 

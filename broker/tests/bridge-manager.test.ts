@@ -6,7 +6,7 @@ import { EventRing } from "../src/events.ts";
 
 function makeManager(): BridgeManager {
   return new BridgeManager({
-    editorSocketPath: "/tmp/does-not-exist.sock",
+    editorEndpoint: "/tmp/does-not-exist.sock",
     runtimeDir: "/tmp",
     projectPath: null,
     timeoutMs: 1000,

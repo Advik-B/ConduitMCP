@@ -24,17 +24,25 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { setTimeout as sleep } from "node:timers/promises";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
-const SOCK_DIR = `/tmp/conduit-p3-${process.pid}`;
-const EDITOR_SOCK = join(SOCK_DIR, "editor.sock");
-const EDITOR_LOG = join(SOCK_DIR, "editor.log");
-const MAIN_TSCN_PATH = join(repoRoot, "example-project", "main.tscn");
+import {
+  conduitEnv,
+  endpointKey,
+  exampleProject,
+  godotCommand,
+  killTree,
+  repoRoot,
+  resolveGodot,
+  runtimeDir,
+  waitForEditor,
+} from "./harness.ts";
+
+const RUNTIME_DIR = runtimeDir("p3");
+const EDITOR_LOG = join(RUNTIME_DIR, "editor.log");
+const MAIN_TSCN_PATH = join(exampleProject, "main.tscn");
 
 // A well-known minimal valid 1x1 transparent PNG, used to exercise the
 // asset-import pipeline without shipping a binary fixture.
@@ -51,21 +59,6 @@ const checks: Check[] = [];
 function record(name: string, pass: boolean, detail: string): void {
   checks.push({ name, pass, detail });
   console.log(`  [${pass ? "PASS" : "FAIL"}] ${name}: ${detail}`);
-}
-
-function resolveGodot(): string {
-  const env = process.env.GODOT_BIN;
-  if (env && existsSync(env)) {
-    return env;
-  }
-  const pointer = join(repoRoot, "tools", "godot", "GODOT_BIN");
-  if (existsSync(pointer)) {
-    const path = readFileSync(pointer, "utf8").trim();
-    if (existsSync(path)) {
-      return path;
-    }
-  }
-  throw new Error("GODOT_BIN not set and tools/godot/GODOT_BIN missing; run `bun scripts/setup.ts`");
 }
 
 async function run(cmd: string[], cwd: string): Promise<number> {
@@ -110,7 +103,7 @@ function findNode(tree: { name: string; children?: unknown[] }, name: string): a
 async function main(): Promise<void> {
   const godot = resolveGodot();
   console.log(`Godot: ${godot}`);
-  console.log(`Socket dir: ${SOCK_DIR}`);
+  console.log(`Runtime dir: ${RUNTIME_DIR}`);
 
   // gd_scene_save (step below) persists the "Added" node into main.tscn with
   // an ext_resource reference to added_script.gd. Cleanup deletes that script
@@ -124,8 +117,8 @@ async function main(): Promise<void> {
     throw new Error("bridge build failed");
   }
 
-  rmSync(SOCK_DIR, { recursive: true, force: true });
-  mkdirSync(SOCK_DIR, { recursive: true });
+  rmSync(RUNTIME_DIR, { recursive: true, force: true });
+  mkdirSync(RUNTIME_DIR, { recursive: true });
 
   console.log("\nLaunching headless editor ...");
   // --editor sessions do not honour debug/file_logging/enable_file_logging
@@ -133,10 +126,10 @@ async function main(): Promise<void> {
   // gd_script_validate's log-derived diagnostics need an explicit --log-file;
   // the bridge's log_tail module prefers this over the project setting.
   const editor = Bun.spawn(
-    [godot, "--headless", "--editor", "--path", "example-project", "--log-file", EDITOR_LOG],
+    godotCommand(godot, ["--headless", "--editor", "--path", "example-project", "--log-file", EDITOR_LOG], false),
     {
       cwd: repoRoot,
-      env: { ...process.env, CONDUIT_SOCK: EDITOR_SOCK, CONDUIT_RUNTIME_DIR: SOCK_DIR },
+      env: conduitEnv(RUNTIME_DIR),
       stdout: "ignore",
       stderr: "ignore",
     },
@@ -144,8 +137,8 @@ async function main(): Promise<void> {
 
   let client: Client | null = null;
   try {
-    await waitForSocket(EDITOR_SOCK, 60_000);
-    record("editor_bound", existsSync(EDITOR_SOCK), `editor bridge socket present at ${EDITOR_SOCK}`);
+    const endpoint = await waitForEditor(RUNTIME_DIR, 60_000);
+    record("editor_bound", true, `editor bridge bound at ${endpointKey(endpoint)}`);
 
     client = await connectBroker();
     const tools = await client.listTools();
@@ -159,9 +152,9 @@ async function main(): Promise<void> {
     await runChecks(client);
   } finally {
     await client?.close().catch(() => {});
-    editor.kill();
+    killTree(editor);
     await editor.exited.catch(() => {});
-    rmSync(SOCK_DIR, { recursive: true, force: true });
+    rmSync(RUNTIME_DIR, { recursive: true, force: true });
     writeFileSync(MAIN_TSCN_PATH, originalMainTscn);
   }
 
@@ -338,22 +331,11 @@ async function connectBroker(): Promise<Client> {
   const transport = new StdioClientTransport({
     command: "bun",
     args: [join(repoRoot, "broker", "src", "index.ts")],
-    env: { ...process.env, CONDUIT_SOCK: EDITOR_SOCK, CONDUIT_RUNTIME_DIR: SOCK_DIR } as Record<string, string>,
+    env: conduitEnv(RUNTIME_DIR),
   });
   const client = new Client({ name: "phase3-acceptance", version: "0.3.0" });
   await client.connect(transport);
   return client;
-}
-
-async function waitForSocket(path: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(path)) {
-      return;
-    }
-    await sleep(300);
-  }
-  throw new Error(`editor bridge socket did not appear within ${timeoutMs} ms`);
 }
 
 main().catch((error) => {

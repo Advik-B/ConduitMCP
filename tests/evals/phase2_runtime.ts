@@ -13,20 +13,29 @@
 //   - read back errors;
 //   - stop the game and see a clean game_exited event.
 //
-// Run with `bun tests/evals/phase2_runtime.ts` (needs xvfb-run and GODOT_BIN).
+// Run with `bun tests/evals/phase2_runtime.ts` (needs GODOT_BIN and a display:
+// native on Windows/macOS, Xvfb on Linux -- the harness wraps it automatically).
 
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
-// Short paths: a Unix domain socket path must fit sun_path (~108 bytes).
-const SOCK_DIR = "/tmp/conduit-p2";
-const EDITOR_SOCK = join(SOCK_DIR, "editor.sock");
+import {
+  conduitEnv,
+  endpointKey,
+  godotCommand,
+  killTree,
+  repoRoot,
+  requireDisplay,
+  resolveGodot,
+  runtimeDir,
+  waitForEditor,
+} from "./harness.ts";
+
+const RUNTIME_DIR = runtimeDir("p2");
 const PLAYER = "/root/Main/Player";
 
 interface Check {
@@ -39,28 +48,6 @@ const checks: Check[] = [];
 function record(name: string, pass: boolean, detail: string): void {
   checks.push({ name, pass, detail });
   console.log(`  [${pass ? "PASS" : "FAIL"}] ${name}: ${detail}`);
-}
-
-function resolveGodot(): string {
-  const env = process.env.GODOT_BIN;
-  if (env && existsSync(env)) {
-    return env;
-  }
-  const pointer = join(repoRoot, "tools", "godot", "GODOT_BIN");
-  if (existsSync(pointer)) {
-    const path = readFileSync(pointer, "utf8").trim();
-    if (existsSync(path)) {
-      return path;
-    }
-  }
-  throw new Error("GODOT_BIN not set and tools/godot/GODOT_BIN missing; run `bun scripts/setup.ts`");
-}
-
-function requireXvfb(): void {
-  const found = Bun.spawnSync(["which", "xvfb-run"]).exitCode === 0;
-  if (!found) {
-    throw new Error("xvfb-run not found; run `bun scripts/setup.ts` to install it (needs apt)");
-  }
 }
 
 async function run(cmd: string[], cwd: string): Promise<number> {
@@ -93,45 +80,28 @@ async function callJson(client: Client, name: string, args: Record<string, unkno
 
 async function main(): Promise<void> {
   const godot = resolveGodot();
-  requireXvfb();
+  requireDisplay();
   console.log(`Godot: ${godot}`);
-  console.log(`Socket dir: ${SOCK_DIR}`);
+  console.log(`Runtime dir: ${RUNTIME_DIR}`);
 
   console.log("\nBuilding bridge (cargo build -p conduit) ...");
   if ((await run(["cargo", "build", "-p", "conduit"], repoRoot)) !== 0) {
     throw new Error("bridge build failed");
   }
 
-  rmSync(SOCK_DIR, { recursive: true, force: true });
-  mkdirSync(SOCK_DIR, { recursive: true });
+  rmSync(RUNTIME_DIR, { recursive: true, force: true });
+  mkdirSync(RUNTIME_DIR, { recursive: true });
 
-  console.log("\nLaunching editor under Xvfb ...");
-  const editorEnv = {
-    ...process.env,
-    CONDUIT_SOCK: EDITOR_SOCK,
-    CONDUIT_RUNTIME_DIR: SOCK_DIR,
-    CONDUIT_ENABLE: "1",
-  } as Record<string, string>;
+  console.log("\nLaunching editor with a display ...");
   const editor = Bun.spawn(
-    [
-      "xvfb-run",
-      "-a",
-      "-s",
-      "-screen 0 1280x720x24",
-      godot,
-      "--editor",
-      "--rendering-driver",
-      "opengl3",
-      "--path",
-      "example-project",
-    ],
-    { cwd: repoRoot, env: editorEnv, stdout: "ignore", stderr: "ignore" },
+    godotCommand(godot, ["--editor", "--rendering-driver", "opengl3", "--path", "example-project"], true),
+    { cwd: repoRoot, env: conduitEnv(RUNTIME_DIR), stdout: "ignore", stderr: "ignore" },
   );
 
   let client: Client | null = null;
   try {
-    await waitForSocket(EDITOR_SOCK, 120_000);
-    record("editor_bound", existsSync(EDITOR_SOCK), `editor bridge socket present at ${EDITOR_SOCK}`);
+    const endpoint = await waitForEditor(RUNTIME_DIR, 120_000);
+    record("editor_bound", true, `editor bridge bound at ${endpointKey(endpoint)}`);
 
     client = await connectBroker();
     const tools = await client.listTools();
@@ -145,10 +115,9 @@ async function main(): Promise<void> {
     await runChecks(client);
   } finally {
     await client?.close().catch(() => {});
-    editor.kill();
-    Bun.spawnSync(["pkill", "-f", "example-project"]);
+    killTree(editor);
     await editor.exited.catch(() => {});
-    rmSync(SOCK_DIR, { recursive: true, force: true });
+    rmSync(RUNTIME_DIR, { recursive: true, force: true });
   }
 
   console.log("\n=== Phase 2 acceptance summary ===");
@@ -252,22 +221,11 @@ async function connectBroker(): Promise<Client> {
   const transport = new StdioClientTransport({
     command: "bun",
     args: [join(repoRoot, "broker", "src", "index.ts")],
-    env: { ...process.env, CONDUIT_SOCK: EDITOR_SOCK, CONDUIT_RUNTIME_DIR: SOCK_DIR } as Record<string, string>,
+    env: conduitEnv(RUNTIME_DIR),
   });
   const client = new Client({ name: "phase2-acceptance", version: "0.2.0" });
   await client.connect(transport);
   return client;
-}
-
-async function waitForSocket(path: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(path)) {
-      return;
-    }
-    await sleep(300);
-  }
-  throw new Error(`editor bridge socket did not appear within ${timeoutMs} ms`);
 }
 
 main().catch((error) => {

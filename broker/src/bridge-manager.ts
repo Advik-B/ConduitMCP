@@ -3,19 +3,23 @@
 // version at the handshake, and turns a game socket closing into a game_exited
 // event (whitepaper sections 6.1, 7.2, and 7.5).
 
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import {
+  type Endpoint,
+  endpointKey,
+  gameEndpointFromToken,
+  listGameTokens,
+  projectHash,
+} from "./endpoint.ts";
+import { canonicalProjectKey } from "./framing.ts";
 import { BridgeClient, BridgeError, type Hello } from "./ipc-client.ts";
 import type { EventRing } from "./events.ts";
 
 export const PROTOCOL_VERSION = 1;
 
-const GAME_SOCKET_PATTERN = /^conduit-game-.*\.sock$/;
-
 export interface BridgeManagerOptions {
-  editorSocketPath: string;
+  editorEndpoint: Endpoint;
   runtimeDir: string;
   projectPath: string | null;
   timeoutMs: number;
@@ -25,7 +29,7 @@ export interface BridgeManagerOptions {
 interface GameInstance {
   client: BridgeClient;
   hello: Hello;
-  socketPath: string;
+  key: string;
 }
 
 function log(message: string): void {
@@ -33,7 +37,9 @@ function log(message: string): void {
 }
 
 function normalizeProjectPath(path: string): string {
-  return path.replace(/\/+$/, "");
+  // Same canonicalisation both ends use to derive the endpoint hash, so a
+  // project-path match here agrees with endpoint discovery.
+  return canonicalProjectKey(path);
 }
 
 export class BridgeManager {
@@ -55,7 +61,7 @@ export class BridgeManager {
     const deadline = Date.now() + retryMs;
     let lastError: unknown;
     while (Date.now() < deadline) {
-      const client = new BridgeClient({ socketPath: this.options.editorSocketPath, defaultTimeoutMs: this.options.timeoutMs });
+      const client = new BridgeClient({ endpoint: this.options.editorEndpoint, defaultTimeoutMs: this.options.timeoutMs });
       try {
         await client.connect();
         const hello = await client.waitForHello(5_000);
@@ -79,7 +85,7 @@ export class BridgeManager {
     }
     throw new BridgeError({
       code: "editor_unavailable",
-      message: `could not connect to the editor bridge at ${this.options.editorSocketPath}: ${String(lastError)}`,
+      message: `could not connect to the editor bridge at ${endpointKey(this.options.editorEndpoint)}: ${String(lastError)}`,
       retryable: true,
     });
   }
@@ -170,8 +176,8 @@ export class BridgeManager {
   async waitForGame(timeoutMs: number): Promise<GameInstance> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      for (const socketPath of this.newGameSockets()) {
-        const instance = await this.tryConnectGame(socketPath);
+      for (const endpoint of this.newGameEndpoints()) {
+        const instance = await this.tryConnectGame(endpoint);
         if (instance) {
           return instance;
         }
@@ -185,21 +191,21 @@ export class BridgeManager {
     });
   }
 
-  private newGameSockets(): string[] {
-    let entries: string[];
-    try {
-      entries = readdirSync(this.options.runtimeDir);
-    } catch {
-      return [];
-    }
-    return entries
-      .filter((name) => GAME_SOCKET_PATTERN.test(name))
-      .map((name) => join(this.options.runtimeDir, name))
-      .filter((path) => !this.connectedSockets.has(path));
+  // Endpoints of game bridges advertised since we last looked, scoped to this
+  // project (needed on Windows, where the pipe namespace is process-global) and
+  // excluding ones already connected.
+  private newGameEndpoints(): Endpoint[] {
+    const hash = this.options.projectPath
+      ? projectHash(this.options.projectPath)
+      : undefined;
+    return listGameTokens(this.options.runtimeDir, hash)
+      .map((token) => gameEndpointFromToken(this.options.runtimeDir, token))
+      .filter((endpoint) => !this.connectedSockets.has(endpointKey(endpoint)));
   }
 
-  private async tryConnectGame(socketPath: string): Promise<GameInstance | null> {
-    const client = new BridgeClient({ socketPath, defaultTimeoutMs: this.options.timeoutMs });
+  private async tryConnectGame(endpoint: Endpoint): Promise<GameInstance | null> {
+    const key = endpointKey(endpoint);
+    const client = new BridgeClient({ endpoint, defaultTimeoutMs: this.options.timeoutMs });
     try {
       await client.connect();
       const hello = await client.waitForHello(3_000);
@@ -213,20 +219,20 @@ export class BridgeManager {
         return null;
       }
 
-      const instance: GameInstance = { client, hello, socketPath };
+      const instance: GameInstance = { client, hello, key };
       client.onEvent = (event) => this.options.events.record(event.event, { ...(event.data as object), pid: hello.pid });
-      client.onClose = () => this.handleGameClose(hello.pid, socketPath);
+      client.onClose = () => this.handleGameClose(hello.pid, key);
 
       this.games.set(hello.pid, instance);
       this.currentPid = hello.pid;
-      this.connectedSockets.add(socketPath);
+      this.connectedSockets.add(key);
       this.options.events.record("game_started", { pid: hello.pid, engine_version: hello.engine_version });
       log(`game bridge connected (pid ${hello.pid}, engine ${hello.engine_version})`);
       return instance;
     } catch (error) {
-      // The socket may exist before the game finishes binding; leave it for the
+      // The endpoint may exist before the game finishes binding; leave it for the
       // next poll rather than marking it connected.
-      log(`game socket ${socketPath} not ready yet: ${String(error)}`);
+      log(`game endpoint ${key} not ready yet: ${String(error)}`);
       client.close();
       return null;
     }
@@ -239,9 +245,9 @@ export class BridgeManager {
     return normalizeProjectPath(hello.project_path) === normalizeProjectPath(this.options.projectPath);
   }
 
-  private handleGameClose(pid: number, socketPath: string): void {
+  private handleGameClose(pid: number, key: string): void {
     this.games.delete(pid);
-    this.connectedSockets.delete(socketPath);
+    this.connectedSockets.delete(key);
     if (this.currentPid === pid) {
       this.currentPid = null;
     }

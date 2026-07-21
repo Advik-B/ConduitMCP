@@ -36,15 +36,20 @@ function startFakeBridge(
 
 let socketPath: string;
 let server: net.Server | null = null;
+const isWindows = process.platform === "win32";
 
 beforeEach(() => {
-  socketPath = join(tmpdir(), `conduit-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`);
+  const id = `conduit-test-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  // net IPC is a named pipe on Windows and a filesystem socket elsewhere.
+  socketPath = isWindows ? `\\\\.\\pipe\\${id}` : join(tmpdir(), `${id}.sock`);
 });
 
 afterEach(() => {
   server?.close();
   server = null;
-  rmSync(socketPath, { force: true });
+  if (!isWindows) {
+    rmSync(socketPath, { force: true });
+  }
 });
 
 describe("BridgeClient", () => {
@@ -52,7 +57,7 @@ describe("BridgeClient", () => {
     server = await startFakeBridge(socketPath, (req, reply) => {
       reply(encodeFrame({ id: req.id, ok: true, result: { echoed: req.tool } }));
     });
-    const client = new BridgeClient({ socketPath });
+    const client = new BridgeClient({ endpoint: socketPath });
     await client.connect();
     const result = (await client.request("gd_ping", {})) as { echoed: string };
     expect(result.echoed).toBe("gd_ping");
@@ -70,7 +75,7 @@ describe("BridgeClient", () => {
         }
       }
     });
-    const client = new BridgeClient({ socketPath });
+    const client = new BridgeClient({ endpoint: socketPath });
     await client.connect();
     const [a, b] = await Promise.all([
       client.request("gd_a", {}) as Promise<{ id: number }>,
@@ -92,7 +97,7 @@ describe("BridgeClient", () => {
         }),
       );
     });
-    const client = new BridgeClient({ socketPath });
+    const client = new BridgeClient({ endpoint: socketPath });
     await client.connect();
     try {
       await client.request("gd_ping", {});
@@ -109,7 +114,7 @@ describe("BridgeClient", () => {
     server = await startFakeBridge(socketPath, () => {
       // Intentionally silent to trigger the client timeout.
     });
-    const client = new BridgeClient({ socketPath, defaultTimeoutMs: 150 });
+    const client = new BridgeClient({ endpoint: socketPath, defaultTimeoutMs: 150 });
     await client.connect();
     try {
       await client.request("gd_never", {});

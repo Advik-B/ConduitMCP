@@ -15,7 +15,7 @@ use crate::dispatcher::{Dispatcher, DrainBudget};
 use crate::handlers::HandlerRegistry;
 use crate::protocol::{Command, EventSender, Hello, Response, PROTOCOL_VERSION};
 use crate::transport::channels::CommandChannels;
-use crate::transport::ipc::{socket_path, ActivationContext, Listener, Role};
+use crate::transport::ipc::{endpoint, ActivationContext, Listener, Role};
 
 /// Owns the dispatcher, the channel endpoints, and the listener handle for one
 /// bridge personality. Constructed in the node's `init`, wired up in
@@ -79,11 +79,11 @@ impl BridgeCore {
             return;
         };
         let project = project_path();
-        let path = socket_path(self.role, &project);
+        let ep = endpoint(self.role, &project);
         let hello = build_hello(self.role, &project).to_frame_payload();
-        match Listener::spawn(path, hello, inbound_tx, outbound_rx, event_rx) {
+        match Listener::spawn(ep, hello, inbound_tx, outbound_rx, event_rx) {
             Ok(listener) => {
-                godot_print!("Conduit ({}): listening on {}", self.role.as_str(), listener.path().display());
+                godot_print!("Conduit ({}): listening on {}", self.role.as_str(), listener.display());
                 self.listener = Some(listener);
             }
             Err(err) => {

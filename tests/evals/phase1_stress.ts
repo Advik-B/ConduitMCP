@@ -12,19 +12,18 @@
 //
 // Run with `bun tests/evals/phase1_stress.ts`.
 
-import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+import { type Endpoint, endpointKey } from "../../broker/src/endpoint.ts";
 import { BridgeClient } from "../../broker/src/ipc-client.ts";
+import { conduitEnv, godotCommand, killTree, repoRoot, resolveGodot, runtimeDir, waitForEditor } from "./harness.ts";
 import { floodPing, summarize, waitFrames } from "./phase1_stress_client.ts";
 
-const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
-const SOCKET_PATH = `/tmp/conduit-phase1-${process.pid}.sock`;
+const RUNTIME_DIR = runtimeDir("p1");
 const FLOOD_COUNT = 8000;
 const WAIT_FRAMES = 60;
 
@@ -40,21 +39,6 @@ function record(name: string, pass: boolean, detail: string): void {
   console.log(`  [${pass ? "PASS" : "FAIL"}] ${name}: ${detail}`);
 }
 
-function resolveGodot(): string {
-  const env = process.env.GODOT_BIN;
-  if (env && existsSync(env)) {
-    return env;
-  }
-  const pointer = join(repoRoot, "tools", "godot", "GODOT_BIN");
-  if (existsSync(pointer)) {
-    const path = readFileSync(pointer, "utf8").trim();
-    if (existsSync(path)) {
-      return path;
-    }
-  }
-  throw new Error("GODOT_BIN not set and tools/godot/GODOT_BIN missing; run `bun scripts/setup.ts`");
-}
-
 async function run(cmd: string[], cwd: string): Promise<number> {
   const proc = Bun.spawn(cmd, { cwd, stdout: "inherit", stderr: "inherit" });
   return proc.exited;
@@ -63,7 +47,7 @@ async function run(cmd: string[], cwd: string): Promise<number> {
 async function main(): Promise<void> {
   const godot = resolveGodot();
   console.log(`Godot: ${godot}`);
-  console.log(`Socket: ${SOCKET_PATH}`);
+  console.log(`Runtime dir: ${RUNTIME_DIR}`);
 
   console.log("\nBuilding bridge (cargo build -p conduit) ...");
   if ((await run(["cargo", "build", "-p", "conduit"], repoRoot)) !== 0) {
@@ -77,25 +61,25 @@ async function main(): Promise<void> {
   );
   record("engine_free_tests", cargoTests === 0, cargoTests === 0 ? "cargo test passed" : "cargo test failed");
 
-  rmSync(SOCKET_PATH, { force: true });
   console.log("\nLaunching headless editor ...");
-  const editor = Bun.spawn([godot, "--headless", "--editor", "--path", "example-project"], {
+  // Hash-based discovery: the bridge and broker derive the same endpoint from the
+  // project path, with no CONDUIT_SOCK pinning it (exercises the real default).
+  const editor = Bun.spawn(godotCommand(godot, ["--headless", "--editor", "--path", "example-project"], false), {
     cwd: repoRoot,
-    env: { ...process.env, CONDUIT_SOCK: SOCKET_PATH },
+    env: conduitEnv(RUNTIME_DIR),
     stdout: "ignore",
     stderr: "ignore",
   });
 
   try {
-    await waitForSocket(SOCKET_PATH, 45_000);
-    record("bridge_bound", existsSync(SOCKET_PATH), `listener socket present at ${SOCKET_PATH}`);
+    const endpoint = await waitForEditor(RUNTIME_DIR, 45_000);
+    record("bridge_bound", true, `listener bound at ${endpointKey(endpoint)}`);
 
-    await runLiveChecks();
+    await runLiveChecks(endpoint);
     await runMcpRoundTrip();
   } finally {
-    editor.kill();
+    killTree(editor);
     await editor.exited.catch(() => {});
-    rmSync(SOCKET_PATH, { force: true });
   }
 
   console.log("\n=== Phase 1 acceptance summary ===");
@@ -110,19 +94,8 @@ async function main(): Promise<void> {
   console.log("\nAll phase 1 checks passed.");
 }
 
-async function waitForSocket(path: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(path)) {
-      return;
-    }
-    await sleep(200);
-  }
-  throw new Error(`bridge socket did not appear within ${timeoutMs} ms`);
-}
-
-async function runLiveChecks(): Promise<void> {
-  const client = new BridgeClient({ socketPath: SOCKET_PATH });
+async function runLiveChecks(endpoint: Endpoint): Promise<void> {
+  const client = new BridgeClient({ endpoint });
   await client.connect();
   try {
     console.log(`\nFlooding ${FLOOD_COUNT} pings over the raw socket ...`);
@@ -161,7 +134,7 @@ async function runMcpRoundTrip(): Promise<void> {
   const transport = new StdioClientTransport({
     command: "bun",
     args: [join(repoRoot, "broker", "src", "index.ts")],
-    env: { ...process.env, CONDUIT_SOCK: SOCKET_PATH } as Record<string, string>,
+    env: conduitEnv(RUNTIME_DIR),
   });
   const client = new Client({ name: "phase1-acceptance", version: "0.1.0" });
 
