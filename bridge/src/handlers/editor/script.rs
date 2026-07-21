@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::dispatcher::{FrameContext, HandlerOutcome};
 use crate::handlers::args::{optional_str, require_str};
-use crate::handlers::editor::support::{resolve_editor_node, trigger_rescan, undo_redo};
+use crate::handlers::editor::support::{resolve_editor_node, trigger_rescan, undo_redo, validate_project_path};
 use crate::log_tail;
 use crate::protocol::BridgeError;
 
@@ -23,6 +23,7 @@ const VALIDATE_LOG_MAX_BYTES: usize = 64 * 1024;
 pub fn create(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
     let prepared: Result<(String, String), BridgeError> = (|| {
         let path = require_str(args, "path")?;
+        validate_project_path(&path)?;
         let extends = optional_str(args, "extends").unwrap_or_else(|| "Node".to_string());
         let template_source = optional_str(args, "template_source");
         // Never validated here: a broken template_source is exactly how
@@ -51,6 +52,7 @@ pub fn attach(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     HandlerOutcome::Done((|| {
         let node_path = require_str(args, "node_path")?;
         let script_path = require_str(args, "script_path")?;
+        validate_project_path(&script_path)?;
 
         let node = resolve_editor_node(&node_path)?;
         let resource = ResourceLoader::singleton()
@@ -92,6 +94,7 @@ pub fn detach(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
 pub fn validate(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     HandlerOutcome::Done((|| {
         let path = require_str(args, "path")?;
+        validate_project_path(&path)?;
 
         // Local, freshly-captured offset: this must not share the game
         // bridge's incremental log cursor, and must not accumulate across
@@ -172,9 +175,15 @@ mod tests {
     }
 
     #[test]
+    fn create_rejects_a_path_outside_the_project() {
+        assert_invalid_args(create(&json!({ "path": "/tmp/evil.gd" }), &ctx()));
+    }
+
+    #[test]
     fn attach_requires_node_path_and_script_path() {
         assert_invalid_args(attach(&json!({}), &ctx()));
         assert_invalid_args(attach(&json!({ "node_path": "Player" }), &ctx()));
+        assert_invalid_args(attach(&json!({ "node_path": "Player", "script_path": "/tmp/evil.gd" }), &ctx()));
     }
 
     #[test]
@@ -185,6 +194,11 @@ mod tests {
     #[test]
     fn validate_requires_path() {
         assert_invalid_args(validate(&json!({}), &ctx()));
+    }
+
+    #[test]
+    fn validate_rejects_a_path_outside_the_project() {
+        assert_invalid_args(validate(&json!({ "path": "/tmp/evil.gd" }), &ctx()));
     }
 
     #[test]

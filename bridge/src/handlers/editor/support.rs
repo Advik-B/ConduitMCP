@@ -15,6 +15,19 @@ use crate::protocol::BridgeError;
 /// Import can be slow for large or many assets; this is generous on purpose.
 const RESCAN_DEADLINE_FRAMES: u64 = 1200;
 
+/// Confine a resource/file path to the project (`res://`) or user
+/// (`user://`) directory and reject traversal segments, so a handler cannot
+/// be pointed outside the project (whitepaper section 9).
+pub(crate) fn validate_project_path(path: &str) -> Result<(), BridgeError> {
+    if !path.starts_with("res://") && !path.starts_with("user://") {
+        return Err(BridgeError::InvalidArgs(format!("path '{path}' must start with res:// or user://")));
+    }
+    if path.split('/').any(|segment| segment == "..") {
+        return Err(BridgeError::InvalidArgs(format!("path '{path}' must not contain '..' segments")));
+    }
+    Ok(())
+}
+
 /// The root of the scene currently open for editing. Every scene-structure
 /// handler needs one; there is nothing sensible to do without it.
 pub(crate) fn edited_scene_root() -> Result<Gd<Node>, BridgeError> {
@@ -143,4 +156,28 @@ where
         deadline_frame: ctx.frame_index.saturating_add(RESCAN_DEADLINE_FRAMES),
         finish: Some(finish),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_project_path_accepts_res_and_user_scheme() {
+        assert!(validate_project_path("res://scenes/main.tscn").is_ok());
+        assert!(validate_project_path("user://save.dat").is_ok());
+    }
+
+    #[test]
+    fn validate_project_path_rejects_paths_outside_the_project() {
+        assert_eq!(validate_project_path("/etc/passwd").unwrap_err().code(), "invalid_args");
+        assert_eq!(validate_project_path("C:\\Windows\\system.ini").unwrap_err().code(), "invalid_args");
+        assert!(validate_project_path("scenes/main.tscn").is_err());
+    }
+
+    #[test]
+    fn validate_project_path_rejects_traversal_segments() {
+        assert!(validate_project_path("res://../outside.tres").is_err());
+        assert!(validate_project_path("res://a/../../b.tres").is_err());
+    }
 }

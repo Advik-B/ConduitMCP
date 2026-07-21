@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::dispatcher::{FrameContext, HandlerOutcome};
 use crate::handlers::args::require_str;
-use crate::handlers::editor::support::trigger_rescan;
+use crate::handlers::editor::support::{trigger_rescan, validate_project_path};
 use crate::protocol::BridgeError;
 use crate::variant_json::{json_to_variant, json_to_variant_typed, variant_to_json};
 
@@ -40,7 +40,7 @@ fn resource_property_exists(resource: &Gd<Resource>, name: &str) -> bool {
     resource_property_names(resource).iter().any(|candidate| candidate == name)
 }
 
-fn resource_uid_text(path: &str) -> Option<String> {
+pub(crate) fn resource_uid_text(path: &str) -> Option<String> {
     let uid = ResourceLoader::singleton().get_resource_uid(path);
     if uid == ResourceUid::INVALID_ID as i64 {
         None
@@ -53,6 +53,7 @@ pub fn create(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
     let prepared: Result<(String, String), BridgeError> = (|| {
         let class_name = require_str(args, "class_name")?;
         let path = require_str(args, "path")?;
+        validate_project_path(&path)?;
 
         let class_db = ClassDb::singleton();
         if !class_db.class_exists(class_name.as_str()) || !class_db.can_instantiate(class_name.as_str()) {
@@ -91,6 +92,9 @@ pub fn set_property(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
         Ok(v) => v,
         Err(e) => return HandlerOutcome::Done(Err(e)),
     };
+    if let Err(e) = validate_project_path(&path) {
+        return HandlerOutcome::Done(Err(e));
+    }
     let property = match require_str(args, "property") {
         Ok(v) => v,
         Err(e) => return HandlerOutcome::Done(Err(e)),
@@ -152,6 +156,7 @@ mod tests {
     fn create_requires_class_name_and_path() {
         assert_invalid_args(create(&json!({}), &ctx()));
         assert_invalid_args(create(&json!({ "class_name": "Resource" }), &ctx()));
+        assert_invalid_args(create(&json!({ "class_name": "Resource", "path": "/tmp/evil.tres" }), &ctx()));
     }
 
     #[test]
@@ -159,5 +164,9 @@ mod tests {
         assert_invalid_args(set_property(&json!({}), &ctx()));
         assert_invalid_args(set_property(&json!({ "path": "res://x.tres" }), &ctx()));
         assert_invalid_args(set_property(&json!({ "path": "res://x.tres", "property": "resource_name" }), &ctx()));
+        assert_invalid_args(set_property(
+            &json!({ "path": "/tmp/evil.tres", "property": "resource_name", "value": "x" }),
+            &ctx(),
+        ));
     }
 }

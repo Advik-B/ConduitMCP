@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use crate::dispatcher::{FrameContext, HandlerOutcome};
 use crate::handlers::args::{optional_bool, optional_str, optional_u64, require_str};
 use crate::handlers::editor::support::{
-    edited_scene_root, relative_path, resolve_editor_node, trigger_rescan, undo_redo,
+    edited_scene_root, relative_path, resolve_editor_node, trigger_rescan, undo_redo, validate_project_path,
 };
 use crate::protocol::BridgeError;
 
@@ -48,6 +48,7 @@ fn instantiate_node(type_name: &str) -> Result<Gd<Node>, BridgeError> {
 pub fn open(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     HandlerOutcome::Done((|| {
         let path = require_str(args, "path")?;
+        validate_project_path(&path)?;
         EditorInterface::singleton().open_scene_from_path(path.as_str());
         Ok(json!({ "path": path }))
     })())
@@ -57,6 +58,7 @@ pub fn create(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
     let prepared: Result<(String, String, bool), BridgeError> = (|| {
         let root_type = require_str(args, "root_type")?;
         let path = require_str(args, "path")?;
+        validate_project_path(&path)?;
         let root_name = optional_str(args, "root_name");
         let open = optional_bool(args, "open").unwrap_or(true);
 
@@ -127,6 +129,7 @@ pub fn save(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
         let mut editor = EditorInterface::singleton();
         match optional_str(args, "path") {
             Some(path) => {
+                validate_project_path(&path)?;
                 editor.save_scene_as(path.as_str());
                 Ok(json!({ "path": path }))
             }
@@ -323,9 +326,15 @@ mod tests {
     }
 
     #[test]
+    fn open_rejects_a_path_outside_the_project() {
+        assert_invalid_args(open(&json!({ "path": "/etc/passwd" }), &ctx()));
+    }
+
+    #[test]
     fn create_requires_root_type_and_path() {
         assert_invalid_args(create(&json!({}), &ctx()));
         assert_invalid_args(create(&json!({ "root_type": "Node2D" }), &ctx()));
+        assert_invalid_args(create(&json!({ "root_type": "Node2D", "path": "../escape.tscn" }), &ctx()));
     }
 
     #[test]

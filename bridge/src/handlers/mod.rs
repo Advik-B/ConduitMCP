@@ -64,6 +64,10 @@ impl HandlerRegistry {
         handlers.insert("gd_undo", editor::editor_state::undo);
         handlers.insert("gd_redo", editor::editor_state::redo);
         handlers.insert("gd_editor_get_state", editor::editor_state::get_state);
+        handlers.insert("gd_asset_add", editor::assets::add);
+        handlers.insert("gd_asset_reimport", editor::assets::reimport);
+        handlers.insert("gd_file_move", editor::files::move_file);
+        handlers.insert("gd_file_delete", editor::files::delete);
         HandlerRegistry { handlers }
     }
 
