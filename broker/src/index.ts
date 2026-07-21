@@ -14,18 +14,26 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { BridgeManager } from "./bridge-manager.ts";
-import { BridgeError } from "./ipc-client.ts";
 import { EventRing } from "./events.ts";
 import { shortHash } from "./framing.ts";
+import { registerEditorAssetsTools } from "./tools/editor-assets.ts";
+import { registerEditorFilesTools } from "./tools/editor-files.ts";
+import { registerEditorProjectTools } from "./tools/editor-project.ts";
+import { registerEditorResourceTools } from "./tools/editor-resource.ts";
+import { registerEditorSceneTools } from "./tools/editor-scene.ts";
+import { registerEditorScriptTools } from "./tools/editor-script.ts";
+import { registerEditorStateTools } from "./tools/editor-state.ts";
+import {
+  AWAIT_TIMEOUT_MS,
+  DEFAULT_TIMEOUT_MS,
+  instanceField,
+  makeEditorTool,
+  makeGameTool,
+  textResult,
+  toToolError,
+} from "./tool-helpers.ts";
 
-const DEFAULT_TIMEOUT_MS = 10_000;
-const AWAIT_TIMEOUT_MS = 120_000;
 const GAME_CONNECT_TIMEOUT_MS = 20_000;
-
-type ToolResult = {
-  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
-  isError?: true;
-};
 
 function log(message: string): void {
   process.stderr.write(`conduit-broker: ${message}\n`);
@@ -49,55 +57,9 @@ function resolveConfig(): Config {
   return { runtimeDir, projectPath, editorSocketPath };
 }
 
-function toToolError(error: unknown): ToolResult {
-  if (error instanceof BridgeError) {
-    return { content: [{ type: "text", text: `${error.code}: ${error.message}` }], isError: true };
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return { content: [{ type: "text", text: `internal_error: ${message}` }], isError: true };
-}
-
-function textResult(value: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(value) }] };
-}
-
-const instanceField = { instance: z.number().int().describe("Game instance pid; defaults to the most recent.").optional() };
-
 export function registerTools(server: McpServer, manager: BridgeManager, events: EventRing): void {
-  const gameTool = (
-    name: string,
-    description: string,
-    inputSchema: Record<string, z.ZodTypeAny>,
-    annotations: Record<string, boolean>,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
-  ): void => {
-    server.registerTool(name, { description, inputSchema: { ...inputSchema, ...instanceField }, annotations }, async (args) => {
-      try {
-        const { instance, ...rest } = args as Record<string, unknown> & { instance?: number };
-        const result = await manager.gameRequest(name, rest, timeoutMs, instance);
-        return textResult(result);
-      } catch (error) {
-        return toToolError(error);
-      }
-    });
-  };
-
-  const editorTool = (
-    name: string,
-    description: string,
-    inputSchema: Record<string, z.ZodTypeAny>,
-    annotations: Record<string, boolean>,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
-  ): void => {
-    server.registerTool(name, { description, inputSchema, annotations }, async (args) => {
-      try {
-        const result = await manager.editorRequest(name, args as Record<string, unknown>, timeoutMs);
-        return textResult(result);
-      } catch (error) {
-        return toToolError(error);
-      }
-    });
-  };
+  const gameTool = makeGameTool(server, manager);
+  const editorTool = makeEditorTool(server, manager);
 
   editorTool(
     "gd_ping",
@@ -350,6 +312,14 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     },
     async ({ cursor }) => textResult(events.since(cursor ?? 0)),
   );
+
+  registerEditorSceneTools(server, manager);
+  registerEditorScriptTools(server, manager);
+  registerEditorResourceTools(server, manager);
+  registerEditorProjectTools(server, manager);
+  registerEditorStateTools(server, manager);
+  registerEditorAssetsTools(server, manager);
+  registerEditorFilesTools(server, manager);
 }
 
 async function main(): Promise<void> {

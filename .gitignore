@@ -1,6 +1,6 @@
 /target
 bridge/target
-tools/
+/tools/
 node_modules/
 broker/node_modules/
 example-project/.godot/
