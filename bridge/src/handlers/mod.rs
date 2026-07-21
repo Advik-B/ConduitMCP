@@ -53,6 +53,10 @@ impl HandlerRegistry {
         handlers.insert("gd_node_reparent", editor::scene::node_reparent);
         handlers.insert("gd_node_rename", editor::scene::node_rename);
         handlers.insert("gd_node_duplicate", editor::scene::node_duplicate);
+        handlers.insert("gd_script_create", editor::script::create);
+        handlers.insert("gd_script_attach", editor::script::attach);
+        handlers.insert("gd_script_detach", editor::script::detach);
+        handlers.insert("gd_script_validate", editor::script::validate);
         HandlerRegistry { handlers }
     }
 

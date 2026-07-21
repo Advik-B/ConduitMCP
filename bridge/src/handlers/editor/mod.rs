@@ -4,4 +4,5 @@
 
 pub mod play;
 pub mod scene;
+pub mod script;
 pub mod support;
