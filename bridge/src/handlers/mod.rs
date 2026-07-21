@@ -73,6 +73,10 @@ impl HandlerRegistry {
         handlers.insert("gd_editor_list_dialogs", editor::ui::list_dialogs);
         handlers.insert("gd_editor_dialog_choose", editor::ui::dialog_choose);
         handlers.insert("gd_editor_ui", editor::ui::editor_ui);
+        handlers.insert("gd_editor_pixel_move", editor::pixel::pixel_move);
+        handlers.insert("gd_editor_pixel_click", editor::pixel::pixel_click);
+        handlers.insert("gd_editor_pixel_drag", editor::pixel::pixel_drag);
+        handlers.insert("gd_editor_window_info", editor::pixel::window_info);
         handlers.insert("gd_asset_add", editor::assets::add);
         handlers.insert("gd_asset_reimport", editor::assets::reimport);
         handlers.insert("gd_file_move", editor::files::move_file);

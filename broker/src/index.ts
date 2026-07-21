@@ -21,6 +21,7 @@ import { registerEditorCollabTools } from "./tools/editor-collab.ts";
 import { registerEditorDebugTools } from "./tools/editor-debug.ts";
 import { registerEditorExportTools } from "./tools/editor-export.ts";
 import { registerEditorFilesTools } from "./tools/editor-files.ts";
+import { registerEditorPixelTools } from "./tools/editor-pixel.ts";
 import { registerEditorProjectTools } from "./tools/editor-project.ts";
 import { registerEditorResourceTools } from "./tools/editor-resource.ts";
 import { registerEditorSceneTools } from "./tools/editor-scene.ts";
@@ -46,6 +47,12 @@ interface Config {
   runtimeDir: string;
   projectPath: string | null;
   editorSocketPath: string;
+  enablePixelTools: boolean;
+}
+
+/** Whether a boolean CLI flag is present in the process arguments. */
+function hasCliFlag(name: string): boolean {
+  return process.argv.slice(2).includes(name);
 }
 
 function resolveConfig(): Config {
@@ -57,10 +64,17 @@ function resolveConfig(): Config {
   if (!editorSocketPath) {
     throw new Error("set CONDUIT_SOCK or CONDUIT_PROJECT so the broker can locate the editor bridge socket");
   }
-  return { runtimeDir, projectPath, editorSocketPath };
+  // CLI flags take precedence over environment variables (whitepaper section 15).
+  const enablePixelTools = hasCliFlag("--enable-pixel-tools") || !!process.env.CONDUIT_ENABLE_PIXEL_TOOLS;
+  return { runtimeDir, projectPath, editorSocketPath, enablePixelTools };
 }
 
-export function registerTools(server: McpServer, manager: BridgeManager, events: EventRing): void {
+/** Tool-surface options resolved from configuration. */
+export interface ToolOptions {
+  enablePixelTools: boolean;
+}
+
+export function registerTools(server: McpServer, manager: BridgeManager, events: EventRing, options: ToolOptions): void {
   const gameTool = makeGameTool(server, manager);
   const editorTool = makeEditorTool(server, manager);
 
@@ -326,6 +340,12 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   registerEditorExportTools(server, manager);
   registerEditorDebugTools(server, manager);
   registerEditorCollabTools(server, manager);
+
+  // Tier-3 pixel fallback: registered only under an explicit opt-in (section 15),
+  // so the default tool surface never exposes it.
+  if (options.enablePixelTools) {
+    registerEditorPixelTools(server, manager);
+  }
 }
 
 async function main(): Promise<void> {
@@ -352,7 +372,10 @@ async function main(): Promise<void> {
   const hello = await manager.connectEditor();
   log(`connected to editor bridge (engine ${hello.engine_version})`);
 
-  registerTools(server, manager, events);
+  registerTools(server, manager, events, { enablePixelTools: config.enablePixelTools });
+  if (config.enablePixelTools) {
+    log("pixel tools enabled (tier-3 editor fallback)");
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

@@ -89,7 +89,8 @@ const EXPECTED_TOOLS = [
 describe("tool definitions", () => {
   const { server, registrations } = collectRegistrations();
   // The manager and events are only used inside handlers, not during registration.
-  registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing);
+  // Pixel tools are off by default, so the default surface excludes them.
+  registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing, { enablePixelTools: false });
 
   test("registers exactly the phase 1-5 tool surface", () => {
     const names = registrations.map((r) => r.name).sort();
@@ -188,5 +189,57 @@ describe("tool definitions", () => {
     const tool = registrations.find((r) => r.name === "gd_debug");
     expect(tool?.config.annotations?.readOnlyHint).toBe(false);
     expect(tool?.config.annotations?.destructiveHint).toBe(false);
+  });
+});
+
+const PIXEL_TOOLS = [
+  "gd_editor_pixel_click",
+  "gd_editor_pixel_drag",
+  "gd_editor_pixel_move",
+  "gd_editor_window_info",
+];
+
+function registrationsWith(enablePixelTools: boolean): Registration[] {
+  const { server, registrations } = collectRegistrations();
+  registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing, { enablePixelTools });
+  return registrations;
+}
+
+describe("tier-3 pixel tool gating", () => {
+  test("pixel tools are absent from the default tool surface", () => {
+    const names = registrationsWith(false).map((r) => r.name);
+    for (const name of PIXEL_TOOLS) {
+      expect(names).not.toContain(name);
+    }
+  });
+
+  test("pixel tools are registered only when explicitly enabled", () => {
+    const names = registrationsWith(true).map((r) => r.name).sort();
+    for (const name of PIXEL_TOOLS) {
+      expect(names).toContain(name);
+    }
+  });
+
+  test("enabling pixel tools adds exactly the four tier-3 tools", () => {
+    const off = new Set(registrationsWith(false).map((r) => r.name));
+    const added = registrationsWith(true)
+      .map((r) => r.name)
+      .filter((name) => !off.has(name))
+      .sort();
+    expect(added).toEqual(PIXEL_TOOLS);
+  });
+
+  test("pixel input tools are destructive and not idempotent; window_info is read-only", () => {
+    const enabled = registrationsWith(true);
+    for (const name of ["gd_editor_pixel_move", "gd_editor_pixel_click", "gd_editor_pixel_drag"]) {
+      const tool = enabled.find((r) => r.name === name);
+      expect(tool?.config.annotations?.readOnlyHint).toBe(false);
+      expect(tool?.config.annotations?.destructiveHint).toBe(true);
+      expect(tool?.config.annotations?.idempotentHint).toBe(false);
+      expect(tool?.config.annotations?.openWorldHint).toBe(false);
+    }
+    const info = enabled.find((r) => r.name === "gd_editor_window_info");
+    expect(info?.config.annotations?.readOnlyHint).toBe(true);
+    expect(info?.config.annotations?.destructiveHint).toBe(false);
   });
 });

@@ -99,7 +99,10 @@ fn current_main_screen(editor: &Gd<EditorInterface>) -> Value {
     for child in container.get_children().iter_shared() {
         let visible = child.clone().try_cast::<Control>().map(|c| c.is_visible()).unwrap_or(false);
         if visible {
-            let class = child.get_class().to_string();
+            // Since 4.3 a main-screen editor may be nested in a WindowWrapper
+            // (for the make-floating feature), so map from the first known editor
+            // class in the visible subtree rather than the wrapper's own class.
+            let class = main_screen_class(&child).unwrap_or_else(|| child.get_class().to_string());
             let name = match class.as_str() {
                 "CanvasItemEditor" => "2D",
                 "Node3DEditor" => "3D",
@@ -112,4 +115,20 @@ fn current_main_screen(editor: &Gd<EditorInterface>) -> Value {
         }
     }
     Value::Null
+}
+
+/// The first known main-screen editor class in `node`'s subtree (including
+/// `node` itself), unwrapping the WindowWrapper indirection.
+fn main_screen_class(node: &Gd<Node>) -> Option<String> {
+    const KNOWN: [&str; 5] = ["CanvasItemEditor", "Node3DEditor", "ScriptEditor", "GameView", "EditorAssetLibrary"];
+    let class = node.get_class().to_string();
+    if KNOWN.contains(&class.as_str()) {
+        return Some(class);
+    }
+    for child in node.get_children().iter_shared() {
+        if let Some(found) = main_screen_class(&child) {
+            return Some(found);
+        }
+    }
+    None
 }
