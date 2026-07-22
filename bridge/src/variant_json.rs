@@ -13,10 +13,10 @@
 //! error-message logic and are unit-tested here without Godot.
 
 use godot::builtin::{
-    Color, GString, NodePath, PackedByteArray, PackedColorArray, PackedFloat32Array,
+    Aabb, Basis, Color, GString, NodePath, PackedByteArray, PackedColorArray, PackedFloat32Array,
     PackedFloat64Array, PackedInt32Array, PackedInt64Array, PackedStringArray, PackedVector2Array,
-    PackedVector3Array, Quaternion, Rect2, Rect2i, StringName, Vector2, Vector2i, Vector3,
-    Vector3i, Vector4, Vector4i,
+    PackedVector3Array, Plane, Projection, Quaternion, Rect2, Rect2i, StringName, Transform2D,
+    Transform3D, Vector2, Vector2i, Vector3, Vector3i, Vector4, Vector4i,
 };
 use godot::builtin::{Array as GArray, Dictionary, Variant, VariantType};
 use godot::meta::ToGodot;
@@ -67,7 +67,7 @@ fn field_array<'a>(obj: &'a Map<String, Value>, tag: &str, key: &str) -> Result<
 
 /// A [`Vector2`] given either as a tagged object, a two-element `[x, y]` array,
 /// or a `{x, y}` object, so packed-array elements and plain input both work.
-fn to_vector2(value: &Value) -> Result<Vector2, BridgeError> {
+pub(crate) fn to_vector2(value: &Value) -> Result<Vector2, BridgeError> {
     if let Some(items) = value.as_array() {
         if items.len() != 2 {
             return Err(invalid("Vector2 array must have exactly 2 elements"));
@@ -80,7 +80,7 @@ fn to_vector2(value: &Value) -> Result<Vector2, BridgeError> {
     Ok(Vector2::new(field_f32(obj, "Vector2", "x")?, field_f32(obj, "Vector2", "y")?))
 }
 
-fn to_vector3(value: &Value) -> Result<Vector3, BridgeError> {
+pub(crate) fn to_vector3(value: &Value) -> Result<Vector3, BridgeError> {
     if let Some(items) = value.as_array() {
         if items.len() != 3 {
             return Err(invalid("Vector3 array must have exactly 3 elements"));
@@ -100,13 +100,121 @@ fn to_vector3(value: &Value) -> Result<Vector3, BridgeError> {
     ))
 }
 
-fn to_color(value: &Value) -> Result<Color, BridgeError> {
+pub(crate) fn to_color(value: &Value) -> Result<Color, BridgeError> {
     let obj = require_object(value, "Color")?;
     Ok(Color::from_rgba(
         field_f32(obj, "Color", "r")?,
         field_f32(obj, "Color", "g")?,
         field_f32(obj, "Color", "b")?,
         obj.get("a").and_then(Value::as_f64).map(|a| a as f32).unwrap_or(1.0),
+    ))
+}
+
+pub(crate) fn to_vector4(value: &Value) -> Result<Vector4, BridgeError> {
+    if let Some(items) = value.as_array() {
+        if items.len() != 4 {
+            return Err(invalid("Vector4 array must have exactly 4 elements"));
+        }
+        let c = |i: usize| items[i].as_f64().map(|n| n as f32);
+        return Ok(Vector4::new(
+            c(0).ok_or_else(|| invalid("Vector4[0] must be a number"))?,
+            c(1).ok_or_else(|| invalid("Vector4[1] must be a number"))?,
+            c(2).ok_or_else(|| invalid("Vector4[2] must be a number"))?,
+            c(3).ok_or_else(|| invalid("Vector4[3] must be a number"))?,
+        ));
+    }
+    let obj = require_object(value, "Vector4")?;
+    Ok(Vector4::new(
+        field_f32(obj, "Vector4", "x")?,
+        field_f32(obj, "Vector4", "y")?,
+        field_f32(obj, "Vector4", "z")?,
+        field_f32(obj, "Vector4", "w")?,
+    ))
+}
+
+/// A [`Quaternion`] given as a tagged object, `[x, y, z, w]` array, or
+/// `{x, y, z, w}` object, mirroring the vector accept-forms.
+pub(crate) fn to_quaternion(value: &Value) -> Result<Quaternion, BridgeError> {
+    if let Some(items) = value.as_array() {
+        if items.len() != 4 {
+            return Err(invalid("Quaternion array must have exactly 4 elements"));
+        }
+        let c = |i: usize| items[i].as_f64().map(|n| n as f32);
+        return Ok(Quaternion::new(
+            c(0).ok_or_else(|| invalid("Quaternion[0] must be a number"))?,
+            c(1).ok_or_else(|| invalid("Quaternion[1] must be a number"))?,
+            c(2).ok_or_else(|| invalid("Quaternion[2] must be a number"))?,
+            c(3).ok_or_else(|| invalid("Quaternion[3] must be a number"))?,
+        ));
+    }
+    let obj = require_object(value, "Quaternion")?;
+    Ok(Quaternion::new(
+        field_f32(obj, "Quaternion", "x")?,
+        field_f32(obj, "Quaternion", "y")?,
+        field_f32(obj, "Quaternion", "z")?,
+        field_f32(obj, "Quaternion", "w")?,
+    ))
+}
+
+// The matrix and transform wire shapes use GDScript's property convention:
+// Transform2D `x`/`y` and Basis/Projection `x`/`y`/`z`/`w` are the COLUMN
+// vectors of the matrix. gdext stores Basis by rows, so input maps columns
+// through `from_cols` and output reads them back through `col_a`/`col_b`/
+// `col_c`. No flat element-array form is accepted, so row/column order can
+// never be ambiguous on the wire.
+
+fn to_transform2d(value: &Value) -> Result<Transform2D, BridgeError> {
+    let obj = require_object(value, "Transform2D")?;
+    Ok(Transform2D::from_cols(
+        to_vector2(field(obj, "Transform2D", "x")?)?,
+        to_vector2(field(obj, "Transform2D", "y")?)?,
+        to_vector2(field(obj, "Transform2D", "origin")?)?,
+    ))
+}
+
+fn to_basis(value: &Value) -> Result<Basis, BridgeError> {
+    let obj = require_object(value, "Basis")?;
+    Ok(Basis::from_cols(
+        to_vector3(field(obj, "Basis", "x")?)?,
+        to_vector3(field(obj, "Basis", "y")?)?,
+        to_vector3(field(obj, "Basis", "z")?)?,
+    ))
+}
+
+fn to_transform3d(value: &Value) -> Result<Transform3D, BridgeError> {
+    let obj = require_object(value, "Transform3D")?;
+    Ok(Transform3D::new(
+        to_basis(field(obj, "Transform3D", "basis")?)?,
+        to_vector3(field(obj, "Transform3D", "origin")?)?,
+    ))
+}
+
+fn to_aabb(value: &Value) -> Result<Aabb, BridgeError> {
+    let obj = require_object(value, "AABB")?;
+    Ok(Aabb {
+        position: to_vector3(field(obj, "AABB", "position")?)?,
+        size: to_vector3(field(obj, "AABB", "size")?)?,
+    })
+}
+
+// Every gdext Plane constructor asserts a unit normal; the struct literal is
+// the documented non-panicking path and matches GDScript's Plane(a, b, c, d),
+// which accepts any normal.
+fn to_plane(value: &Value) -> Result<Plane, BridgeError> {
+    let obj = require_object(value, "Plane")?;
+    Ok(Plane {
+        normal: to_vector3(field(obj, "Plane", "normal")?)?,
+        d: field_f32(obj, "Plane", "d")?,
+    })
+}
+
+fn to_projection(value: &Value) -> Result<Projection, BridgeError> {
+    let obj = require_object(value, "Projection")?;
+    Ok(Projection::from_cols(
+        to_vector4(field(obj, "Projection", "x")?)?,
+        to_vector4(field(obj, "Projection", "y")?)?,
+        to_vector4(field(obj, "Projection", "z")?)?,
+        to_vector4(field(obj, "Projection", "w")?)?,
     ))
 }
 
@@ -121,7 +229,15 @@ pub fn json_to_variant_typed(value: &Value, expected: VariantType) -> Result<Var
     match expected {
         VariantType::VECTOR2 => Ok(to_vector2(value)?.to_variant()),
         VariantType::VECTOR3 => Ok(to_vector3(value)?.to_variant()),
+        VariantType::VECTOR4 => Ok(to_vector4(value)?.to_variant()),
         VariantType::COLOR => Ok(to_color(value)?.to_variant()),
+        VariantType::QUATERNION => Ok(to_quaternion(value)?.to_variant()),
+        VariantType::TRANSFORM2D => Ok(to_transform2d(value)?.to_variant()),
+        VariantType::BASIS => Ok(to_basis(value)?.to_variant()),
+        VariantType::TRANSFORM3D => Ok(to_transform3d(value)?.to_variant()),
+        VariantType::AABB => Ok(to_aabb(value)?.to_variant()),
+        VariantType::PLANE => Ok(to_plane(value)?.to_variant()),
+        VariantType::PROJECTION => Ok(to_projection(value)?.to_variant()),
         VariantType::FLOAT => value
             .as_f64()
             .map(|n| n.to_variant())
@@ -208,13 +324,7 @@ fn tagged_to_variant(tag: &str, obj: &Map<String, Value>) -> Result<Variant, Bri
         )
         .to_variant()),
         "Color" => Ok(to_color(&v)?.to_variant()),
-        "Quaternion" => Ok(Quaternion::new(
-            field_f32(obj, tag, "x")?,
-            field_f32(obj, tag, "y")?,
-            field_f32(obj, tag, "z")?,
-            field_f32(obj, tag, "w")?,
-        )
-        .to_variant()),
+        "Quaternion" => Ok(to_quaternion(&v)?.to_variant()),
         "Rect2" => {
             let position = to_vector2(field(obj, tag, "position")?)?;
             let size = to_vector2(field(obj, tag, "size")?)?;
@@ -300,15 +410,19 @@ fn tagged_to_variant(tag: &str, obj: &Map<String, Value>) -> Result<Variant, Bri
                 .map(|resource| resource.to_variant())
                 .ok_or_else(|| BridgeError::ResourceError(format!("failed to load resource '{path}'")))
         }
-        other => Err(invalid(format!(
-            "unsupported __type '{other}'; matrix and transform types are not yet tagged (see docs/api-gaps.md)"
-        ))),
+        "Transform2D" => Ok(to_transform2d(&v)?.to_variant()),
+        "Basis" => Ok(to_basis(&v)?.to_variant()),
+        "Transform3D" => Ok(to_transform3d(&v)?.to_variant()),
+        "AABB" => Ok(to_aabb(&v)?.to_variant()),
+        "Plane" => Ok(to_plane(&v)?.to_variant()),
+        "Projection" => Ok(to_projection(&v)?.to_variant()),
+        other => Err(invalid(format!("unsupported __type '{other}'"))),
     }
 }
 
 /// Confine a tagged Resource path to the project or user directory
 /// (whitepaper section 9). Sub-resource paths (`res://a.tscn::Sub_1`) pass.
-fn validate_resource_path(path: &str) -> Result<(), BridgeError> {
+pub(crate) fn validate_resource_path(path: &str) -> Result<(), BridgeError> {
     if !path.starts_with("res://") && !path.starts_with("user://") {
         return Err(invalid(format!("Resource path '{path}' must start with res:// or user://")));
     }
@@ -338,10 +452,7 @@ pub fn variant_to_json(variant: &Variant) -> Value {
             let v = variant.try_to::<Vector3i>().unwrap_or_default();
             json!({ TYPE_KEY: "Vector3i", "x": v.x, "y": v.y, "z": v.z })
         }
-        VariantType::VECTOR4 => {
-            let v = variant.try_to::<Vector4>().unwrap_or_default();
-            json!({ TYPE_KEY: "Vector4", "x": v.x, "y": v.y, "z": v.z, "w": v.w })
-        }
+        VariantType::VECTOR4 => vector4_json(variant.try_to::<Vector4>().unwrap_or_default()),
         VariantType::VECTOR4I => {
             let v = variant.try_to::<Vector4i>().unwrap_or_default();
             json!({ TYPE_KEY: "Vector4i", "x": v.x, "y": v.y, "z": v.z, "w": v.w })
@@ -353,6 +464,34 @@ pub fn variant_to_json(variant: &Variant) -> Value {
         VariantType::QUATERNION => {
             let q = variant.try_to::<Quaternion>().unwrap_or_default();
             json!({ TYPE_KEY: "Quaternion", "x": q.x, "y": q.y, "z": q.z, "w": q.w })
+        }
+        VariantType::TRANSFORM2D => {
+            transform2d_json(variant.try_to::<Transform2D>().unwrap_or_default())
+        }
+        VariantType::BASIS => basis_json(variant.try_to::<Basis>().unwrap_or_default()),
+        VariantType::TRANSFORM3D => {
+            let t = variant.try_to::<Transform3D>().unwrap_or_default();
+            json!({ TYPE_KEY: "Transform3D", "basis": basis_json(t.basis), "origin": vector3_json(t.origin) })
+        }
+        VariantType::AABB => {
+            let a = variant.try_to::<Aabb>().unwrap_or_default();
+            json!({ TYPE_KEY: "AABB", "position": vector3_json(a.position), "size": vector3_json(a.size) })
+        }
+        VariantType::PLANE => {
+            let p = variant
+                .try_to::<Plane>()
+                .unwrap_or(Plane { normal: Vector3::new(0.0, 0.0, 1.0), d: 0.0 });
+            json!({ TYPE_KEY: "Plane", "normal": vector3_json(p.normal), "d": p.d })
+        }
+        VariantType::PROJECTION => {
+            let p = variant.try_to::<Projection>().unwrap_or_default();
+            json!({
+                TYPE_KEY: "Projection",
+                "x": vector4_json(p.cols[0]),
+                "y": vector4_json(p.cols[1]),
+                "z": vector4_json(p.cols[2]),
+                "w": vector4_json(p.cols[3]),
+            })
         }
         VariantType::RECT2 => {
             let r = variant.try_to::<Rect2>().unwrap_or_default();
@@ -423,18 +562,40 @@ pub fn variant_to_json(variant: &Variant) -> Value {
             }
             Err(_) => json!(variant.to_string()),
         },
-        // Matrix and transform types have no tagged form yet; stringify rather
-        // than drop the value (recorded in docs/api-gaps.md).
+        // Remaining types (RID, Callable, Signal) have no meaningful JSON
+        // form; stringify rather than drop the value.
         _ => json!(variant.to_string()),
     }
 }
 
-fn vector2_json(v: Vector2) -> Value {
+pub(crate) fn vector2_json(v: Vector2) -> Value {
     json!({ TYPE_KEY: "Vector2", "x": v.x, "y": v.y })
 }
 
-fn vector3_json(v: Vector3) -> Value {
+pub(crate) fn vector3_json(v: Vector3) -> Value {
     json!({ TYPE_KEY: "Vector3", "x": v.x, "y": v.y, "z": v.z })
+}
+
+pub(crate) fn vector4_json(v: Vector4) -> Value {
+    json!({ TYPE_KEY: "Vector4", "x": v.x, "y": v.y, "z": v.z, "w": v.w })
+}
+
+fn transform2d_json(t: Transform2D) -> Value {
+    json!({
+        TYPE_KEY: "Transform2D",
+        "x": vector2_json(t.a),
+        "y": vector2_json(t.b),
+        "origin": vector2_json(t.origin),
+    })
+}
+
+fn basis_json(b: Basis) -> Value {
+    json!({
+        TYPE_KEY: "Basis",
+        "x": vector3_json(b.col_a()),
+        "y": vector3_json(b.col_b()),
+        "z": vector3_json(b.col_c()),
+    })
 }
 
 fn packed_json<T>(items: &[T], to_value: impl Fn(&T) -> Value) -> Value {
@@ -485,5 +646,107 @@ mod tests {
         assert_eq!(validate_resource_path("/etc/passwd").unwrap_err().code(), "invalid_args");
         assert_eq!(validate_resource_path("res://../outside.tres").unwrap_err().code(), "invalid_args");
         assert_eq!(validate_resource_path("C:/Windows/system.ini").unwrap_err().code(), "invalid_args");
+    }
+
+    #[test]
+    fn to_vector4_accepts_all_forms() {
+        let expected = Vector4::new(1.0, 2.0, 3.0, 4.0);
+        assert_eq!(to_vector4(&json!([1, 2, 3, 4])).unwrap(), expected);
+        assert_eq!(to_vector4(&json!({ "x": 1, "y": 2, "z": 3, "w": 4 })).unwrap(), expected);
+        assert_eq!(
+            to_vector4(&json!({ "__type": "Vector4", "x": 1, "y": 2, "z": 3, "w": 4 })).unwrap(),
+            expected
+        );
+        assert!(to_vector4(&json!([1, 2, 3])).is_err());
+        assert!(to_vector4(&json!({ "x": 1, "y": 2, "z": 3 })).unwrap_err().to_string().contains("'w'"));
+    }
+
+    // The wire format's x/y/z are column vectors; gdext stores rows. This test
+    // pins the mapping so it cannot silently drift.
+    #[test]
+    fn basis_wire_columns_map_to_gdext_rows() {
+        let b = to_basis(&json!({
+            "x": [1, 2, 3],
+            "y": [4, 5, 6],
+            "z": [7, 8, 9],
+        }))
+        .unwrap();
+        assert_eq!(b, Basis::from_cols(
+            Vector3::new(1.0, 2.0, 3.0),
+            Vector3::new(4.0, 5.0, 6.0),
+            Vector3::new(7.0, 8.0, 9.0),
+        ));
+        assert_eq!(b.rows[0], Vector3::new(1.0, 4.0, 7.0));
+        assert_eq!(b.rows[1], Vector3::new(2.0, 5.0, 8.0));
+        assert_eq!(b.rows[2], Vector3::new(3.0, 6.0, 9.0));
+
+        let out = basis_json(b);
+        assert_eq!(out["x"]["x"], json!(1.0));
+        assert_eq!(out["x"]["z"], json!(3.0));
+        assert_eq!(out["z"]["x"], json!(7.0));
+        assert_eq!(to_basis(&out).unwrap(), b);
+    }
+
+    #[test]
+    fn transform2d_accepts_nested_vector_forms_and_round_trips() {
+        let t = to_transform2d(&json!({
+            "x": [0, 1],
+            "y": { "x": -1, "y": 0 },
+            "origin": { "__type": "Vector2", "x": 5, "y": 7 },
+        }))
+        .unwrap();
+        assert_eq!(t.a, Vector2::new(0.0, 1.0));
+        assert_eq!(t.b, Vector2::new(-1.0, 0.0));
+        assert_eq!(t.origin, Vector2::new(5.0, 7.0));
+
+        let out = transform2d_json(t);
+        assert_eq!(out[TYPE_KEY], json!("Transform2D"));
+        assert_eq!(to_transform2d(&out).unwrap(), t);
+
+        let missing = to_transform2d(&json!({ "x": [0, 1], "y": [1, 0] })).unwrap_err();
+        assert!(missing.to_string().contains("'origin'"));
+    }
+
+    #[test]
+    fn transform3d_accepts_tagged_and_bare_basis() {
+        let bare = to_transform3d(&json!({
+            "basis": { "x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1] },
+            "origin": [10, 20, 30],
+        }))
+        .unwrap();
+        let tagged = to_transform3d(&json!({
+            "basis": { "__type": "Basis", "x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1] },
+            "origin": { "x": 10, "y": 20, "z": 30 },
+        }))
+        .unwrap();
+        assert_eq!(bare, tagged);
+        assert_eq!(bare.origin, Vector3::new(10.0, 20.0, 30.0));
+    }
+
+    #[test]
+    fn aabb_reads_position_and_size() {
+        let a = to_aabb(&json!({ "position": [1, 2, 3], "size": [4, 5, 6] })).unwrap();
+        assert_eq!(a.position, Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(a.size, Vector3::new(4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn plane_accepts_non_unit_normal_without_panicking() {
+        let p = to_plane(&json!({ "normal": [0, 10, 0], "d": 2.5 })).unwrap();
+        assert_eq!(p.normal, Vector3::new(0.0, 10.0, 0.0));
+        assert_eq!(p.d, 2.5);
+    }
+
+    #[test]
+    fn projection_wire_columns_round_trip() {
+        let source = json!({
+            "x": [1, 2, 3, 4],
+            "y": [5, 6, 7, 8],
+            "z": [9, 10, 11, 12],
+            "w": [13, 14, 15, 16],
+        });
+        let p = to_projection(&source).unwrap();
+        assert_eq!(p.cols[0], Vector4::new(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(p.cols[3], Vector4::new(13.0, 14.0, 15.0, 16.0));
     }
 }

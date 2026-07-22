@@ -26,8 +26,10 @@ function collectRegistrations(): { server: McpServer; registrations: Registratio
 }
 
 const EXPECTED_TOOLS = [
+  "gd_animation",
   "gd_asset_add",
   "gd_asset_reimport",
+  "gd_audio",
   "gd_autoload",
   "gd_classdb",
   "gd_debug",
@@ -63,11 +65,13 @@ const EXPECTED_TOOLS = [
   "gd_node_set_property",
   "gd_pause",
   "gd_perf",
+  "gd_physics",
   "gd_ping",
   "gd_play",
   "gd_project_get_setting",
   "gd_project_set_setting",
   "gd_redo",
+  "gd_render",
   "gd_resource_create",
   "gd_resource_set_property",
   "gd_scene_create",
@@ -90,10 +94,13 @@ const EXPECTED_TOOLS = [
   "gd_status",
   "gd_step_frames",
   "gd_stop",
+  "gd_tilemap",
   "gd_tree_get",
+  "gd_tree_mutate",
   "gd_undo",
   "gd_wait_frames",
   "gd_wait_time",
+  "gd_window",
 ];
 
 describe("tool definitions", () => {
@@ -105,11 +112,14 @@ describe("tool definitions", () => {
     enableEditorEval: false,
   });
 
-  test("registers exactly the phase 1-7 tool surface", () => {
+  test("registers exactly the phase 1-8 tool surface", () => {
     const names = registrations.map((r) => r.name).sort();
     expect(names).toEqual(EXPECTED_TOOLS);
   });
 
+  // Phase 8 lands exactly at the ceiling (75); phase 9 must consolidate or
+  // revisit the bound with justification (section 7.1: the budget is a design
+  // pressure, not a hard cap, but this test is).
   test("the tool surface stays within the section 7.1 budget of 40-75 tools", () => {
     expect(registrations.length).toBeGreaterThanOrEqual(40);
     expect(registrations.length).toBeLessThanOrEqual(75);
@@ -224,6 +234,32 @@ describe("tool definitions", () => {
       const tool = registrations.find((r) => r.name === name);
       expect(tool?.config.annotations?.readOnlyHint).toBe(false);
       expect(tool?.config.annotations?.destructiveHint).toBe(true);
+    }
+  });
+
+  // gd_physics carries mutating ops (world_set, nav_bake), so none of the
+  // phase 8 tools can truthfully claim read-only.
+  test("phase 8 runtime tools are annotated destructive and not open-world", () => {
+    for (const name of [
+      "gd_animation",
+      "gd_physics",
+      "gd_render",
+      "gd_audio",
+      "gd_tilemap",
+      "gd_window",
+      "gd_tree_mutate",
+    ]) {
+      const tool = registrations.find((r) => r.name === name);
+      expect(tool?.config.annotations?.readOnlyHint).toBe(false);
+      expect(tool?.config.annotations?.destructiveHint).toBe(true);
+      expect(tool?.config.annotations?.openWorldHint).toBe(false);
+    }
+  });
+
+  test("phase 8 tools route to the game bridge with the shared instance field", () => {
+    for (const name of ["gd_animation", "gd_physics", "gd_tilemap", "gd_tree_mutate"]) {
+      const tool = registrations.find((r) => r.name === name);
+      expect(tool?.config.inputSchema?.instance).toBeDefined();
     }
   });
 });

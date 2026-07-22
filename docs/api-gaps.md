@@ -27,12 +27,17 @@ conversions cannot run under plain `cargo test`. Only the pure tag-parsing and
 field-extraction helpers are unit-tested; the conversions themselves are covered
 by the live acceptance eval (property round-trips and `gd_game_eval`).
 
-Matrix and transform Variant types (`Basis`, `Transform2D`, `Transform3D`,
-`AABB`, `Plane`, `Projection`) are not yet tagged: `variant_to_json` stringifies
-them rather than dropping the value, and `json_to_variant` returns an
-`invalid_args` error for their `__type`. The common scalar, vector, colour,
-rect, quaternion, and packed-array types are fully supported both directions.
-Tagging the matrix/transform types is follow-up work.
+As of phase 8 the matrix and transform Variant types (`Basis`, `Transform2D`,
+`Transform3D`, `AABB`, `Plane`, `Projection`) are tagged both directions,
+completing the section 7.3 type table. The wire shapes use GDScript's property
+convention (`x`/`y`/`z`/`w` are column vectors); gdext stores `Basis` by rows,
+so the bridge maps through `from_cols`/`col_a..c`, pinned by an engine-free
+unit test. Two gdext quirks: every `Plane` constructor asserts a unit normal,
+so the bridge builds `Plane` via the documented non-panicking struct literal to
+match GDScript's non-validating `Plane(a, b, c, d)`; matrix struct helpers are
+engine-free (plain Rust structs) and unit-tested, while `Variant` round-trips
+remain covered by the phase 8 eval. Remaining untagged types (`RID`,
+`Callable`, `Signal`, `PackedVector4Array`) stringify on output.
 
 ## Typed collections in gdext 0.5.4
 
@@ -423,3 +428,111 @@ use the phase-4 pattern: a bare `godot --headless` game with the `CONDUIT_ENABLE
 opt-in, driven over the raw bridge protocol. `gd_play` from a `--headless`
 editor spawns a child that expects a display, and the broker only adopts game
 bridges it launched through `gd_play`, so the split acceptance avoids both.
+
+## Phase 8: runtime systems parity
+
+All verified live against Godot 4.7.1 headless by `bun run phase8`, which runs
+entirely as a bare headless game over the raw bridge protocol (the phase 4/7
+part-B pattern) launched straight into `res://phase8.tscn`, and captures the
+game's stderr to a log so a failed dynamic call is diagnosable.
+
+### Navigation classes are gated behind gdext's experimental API feature
+
+gdext 0.5.4 generates no bindings for `NavigationServer2D/3D` or
+`NavigationRegion2D/3D` unless the `experimental-godot-api` feature is enabled
+(Godot marks the navigation classes experimental). Per the working instructions,
+`gd_physics` reaches them dynamically instead of flipping the feature:
+`Engine.get_singleton("NavigationServer2D")` plus `call("map_get_path", ...)`
+for paths, and `node.call("bake_navigation_polygon"/"bake_navigation_mesh")`
+for baking, each guarded by `has_method`/singleton presence checks. Verified
+live: an unbaked map returns an empty path without error, and a synchronous
+bake followed by a map sync (about 10 frames) produces a real path.
+
+### The world's default gravity answers on the space RID
+
+`PhysicsServer2D/3D.area_set_param` and `area_get_param` accept the space RID
+(`World2D/3D.get_space()`) as the default world area, the documented
+runtime-change path for gravity. Verified live: the 2D default reads 980 and a
+write reads back. `gd_physics world_set` uses it for `GRAVITY` and
+`GRAVITY_VECTOR`; the physics tick goes through
+`Engine.physics_ticks_per_second`.
+
+### Space queries run between physics steps
+
+Direct-space-state queries from the `_process` drain are safe under the default
+single-threaded physics (the space is not mid-step). With
+`physics/2d/run_on_separate_thread` enabled the engine may reject them as
+space-locked; the handler surfaces that as `call_failed` rather than guarding
+against a configuration the example project does not use.
+
+### Simulated joypad events drive actions, not Input.get_joy_axis
+
+`Input.parse_input_event` with `InputEventJoypadMotion` feeds the action system
+(`Input.get_action_strength` reflects the held axis across frames, verified
+live through the `phase8_axis` fixture action bound to axis 0 with device -1)
+but does not update the OS-layer joypad state behind `Input.get_joy_axis`,
+which reflects only real devices. The `gd_input` description says so. Held-axis
+semantics: a nonzero value holds the bound action's strength until a `value:
+0.0` event releases it, the axis analogue of press-without-release.
+
+### Plane construction must bypass the gdext constructors
+
+Every gdext `Plane` constructor (`new`, `from_components`, ...) asserts a unit
+normal and panics otherwise. Agent input goes through the documented
+non-panicking struct literal `Plane { normal, d }`, matching GDScript's
+non-validating `Plane(a, b, c, d)`.
+
+### Headless DisplayServer accepts window setters as no-ops
+
+Under `--headless` the window `set_size`/`set_position`/`set_mode` calls are
+accepted and some report back (the title round-trips; the size stays the dummy
+64x64), so `gd_window set` echoes `get_info` after writing and the agent sees
+what actually stuck. `get_info` reports `display_server: "headless"` and a
+`headless` flag so agents can branch.
+
+### Layout: runtime/system.rs is an intentional addition
+
+Whitepaper section 11 lists no file for the window/system group; single-file-
+per-concern puts it in `bridge/src/handlers/runtime/system.rs` rather than
+overloading `systems2d3d.rs` (which is the TileMap/GridMap cells file).
+
+### Capabilities covered by existing generic tools, not new ops
+
+Full-parity closure for these relies on tools that already exist, now that the
+matrix and transform types convert: lights and camera attributes (node and
+resource properties via `gd_node_set_property`/`gd_render`), spatial audio
+configuration (positional player properties), physics body and joint
+configuration (`gd_node_set_property` plus `gd_tree_mutate add_node` for
+creating shape, joint, and light nodes), skeleton IK (SkeletonIK3D or
+SkeletonModifier3D via `gd_node_call`), and richer physics query shapes
+(`gd_game_eval`). CSG, multimesh, procedural meshes, canvas layers, parallax,
+and curves are outside phase 8's enumerated scope (section 10 claims only
+"TileMap and GridMap cells" from the 2D/3D systems group) and remain reachable
+through `gd_game_eval` and the generic tools.
+
+### Deprecated TileMap is rejected
+
+`gd_tilemap` accepts `TileMapLayer` (the 4.3+ node) and `GridMap` only; the
+deprecated `TileMap` node gets an `invalid_args` error naming `TileMapLayer`.
+GridMap cell storage works with a MeshLibrary present (the fixture builds a
+one-item library in `_ready`); bare-GridMap storage without a library was not
+exercised.
+
+### AnimationTree state machines answer through parameters/playback
+
+`gd_animation tree` reaches the state machine playback object dynamically:
+`tree.get("parameters/playback")` yields the `AnimationNodeStateMachinePlayback`
+object, and `travel`/`start`/`stop`/`get_current_node`/`is_playing` go through
+dynamic `call` (the playback class is a non-node Object with no direct-typed
+path worth adding). Verified live: travel on an activated tree reaches the
+target state within a few frames. The fixture keeps the tree inactive until
+the check so it does not take over the AnimationPlayer during the player
+checks.
+
+### Gestures inject and deliver headless
+
+`InputEventMagnifyGesture` and `InputEventPanGesture` constructed by `gd_input`
+and fed through `parse_input_event` reach `_input` handlers in a headless game
+(verified live via the fixture's gesture capture). Debug draw is state-only
+headless: the ops track and expire primitives (verified), but pixels are
+rendering-exempt per the acceptance carve-out.

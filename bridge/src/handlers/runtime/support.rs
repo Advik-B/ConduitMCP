@@ -5,12 +5,17 @@
 //! is by absolute scene path (whitepaper section 6.6); a miss reports the nearest
 //! existing ancestor, matching the section 7.4 error example.
 
+use godot::builtin::VariantType;
 use godot::classes::{Engine, Node, SceneTree, Window};
 use godot::prelude::*;
+use serde_json::{Map, Value};
 
 use crate::protocol::BridgeError;
+use crate::variant_json::{json_to_variant, json_to_variant_typed};
 
-pub use crate::handlers::args::{optional_str, optional_u64, require_str};
+pub use crate::handlers::args::{
+    optional_bool, optional_f64, optional_str, optional_u64, require_f64, require_str,
+};
 
 pub fn scene_tree() -> Result<Gd<SceneTree>, BridgeError> {
     Engine::singleton()
@@ -46,6 +51,52 @@ fn nearest_ancestor_message(root: &Gd<Window>, path: &str) -> String {
         }
     }
     format!("No node at path {path}. Nearest existing ancestor: {nearest}.")
+}
+
+/// Apply a JSON map of property values to any engine object, coercing each
+/// value toward the property's current type as `gd_node_set_property` does.
+/// Unknown properties fail the whole call before any write happens.
+pub fn apply_properties(
+    object: &mut Gd<Object>,
+    properties: &Map<String, Value>,
+) -> Result<Vec<String>, BridgeError> {
+    let mut writes = Vec::with_capacity(properties.len());
+    for (name, value) in properties {
+        let previous = object.get(name.as_str());
+        if previous.is_nil() && !object_property_exists(object, name) {
+            return Err(BridgeError::InvalidProperty(format!(
+                "{} has no property '{name}'",
+                object.get_class()
+            )));
+        }
+        let variant = if previous.get_type() == VariantType::NIL {
+            json_to_variant(value)?
+        } else {
+            json_to_variant_typed(value, previous.get_type())?
+        };
+        writes.push((name.clone(), variant));
+    }
+    let mut applied = Vec::with_capacity(writes.len());
+    for (name, variant) in writes {
+        object.set(name.as_str(), &variant);
+        applied.push(name);
+    }
+    Ok(applied)
+}
+
+/// The optional `properties` argument as an object map.
+pub fn optional_properties(args: &Value) -> Result<Option<&Map<String, Value>>, BridgeError> {
+    match args.get("properties") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(map)) => Ok(Some(map)),
+        Some(_) => Err(BridgeError::InvalidArgs("'properties' must be an object map".into())),
+    }
+}
+
+fn object_property_exists(object: &Gd<Object>, name: &str) -> bool {
+    object.get_property_list().iter_shared().any(|entry| {
+        entry.get(&GString::from("name")).map(|value| value.to_string()).as_deref() == Some(name)
+    })
 }
 
 /// A readable name for a Variant type, for example `VECTOR2` or `INT`.

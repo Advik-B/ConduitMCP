@@ -14,7 +14,8 @@
     "phase4": "bun tests/evals/phase4_headless.ts",
     "phase5": "bun tests/evals/phase5_debugger.ts",
     "phase6": "bun tests/evals/phase6_pixel.ts",
-    "phase7": "bun tests/evals/phase7_parity.ts"
+    "phase7": "bun tests/evals/phase7_parity.ts",
+    "phase8": "bun tests/evals/phase8_runtime_parity.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

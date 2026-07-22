@@ -29,6 +29,13 @@ import { registerEditorSceneTools } from "./tools/editor-scene.ts";
 import { registerEditorScriptTools } from "./tools/editor-script.ts";
 import { registerEditorStateTools } from "./tools/editor-state.ts";
 import { registerEditorWiringTools } from "./tools/editor-wiring.ts";
+import { registerGameAnimationTools } from "./tools/game-animation.ts";
+import { registerGameAudioTools } from "./tools/game-audio.ts";
+import { registerGamePhysicsTools } from "./tools/game-physics.ts";
+import { registerGameRenderTools } from "./tools/game-render.ts";
+import { registerGameTilemapTools } from "./tools/game-tilemap.ts";
+import { registerGameTreeTools } from "./tools/game-tree.ts";
+import { registerGameWindowTools } from "./tools/game-window.ts";
 import {
   AWAIT_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
@@ -220,18 +227,34 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
 
   gameTool(
     "gd_input",
-    "Simulate input, selected by device: key, action, mouse_button, or mouse_motion. A press without a matching release models a held key across frames.",
+    "Simulate input, selected by device: key, action, mouse_button, mouse_motion, joy_button, joy_motion, touch, touch_drag, magnify, or pan. A press without a matching release models a held key or button; a nonzero joy_motion value holds the bound action's strength until a 0.0 release (Input.get_joy_axis reflects only real devices).",
     {
-      device: z.enum(["key", "action", "mouse_button", "mouse_motion"]).describe("Which input device to synthesise."),
+      device: z
+        .enum(["key", "action", "mouse_button", "mouse_motion", "joy_button", "joy_motion", "touch", "touch_drag", "magnify", "pan"])
+        .describe("Which input device to synthesise."),
       key: z.string().describe("Key name (device=key), for example 'right' or 'A'.").optional(),
       keycode: z.number().int().describe("Godot keycode (device=key), an alternative to key.").optional(),
       physical: z.boolean().describe("Treat the key as a physical keycode.").optional(),
       pressed: z.boolean().describe("Pressed (true, default) or released (false).").optional(),
       action: z.string().describe("Input-map action name (device=action).").optional(),
       strength: z.number().describe("Action strength 0..1 (device=action).").optional(),
-      button: z.union([z.string(), z.number()]).describe("Mouse button (device=mouse_button).").optional(),
-      position: z.any().describe("Screen position {x,y} for mouse events.").optional(),
-      relative: z.any().describe("Relative motion {x,y} (device=mouse_motion).").optional(),
+      button: z
+        .union([z.string(), z.number()])
+        .describe("Mouse button (device=mouse_button) or joypad button name/ordinal like a, lb, dpad_up (device=joy_button).")
+        .optional(),
+      axis: z
+        .union([z.string(), z.number()])
+        .describe("Joypad axis name or ordinal: left_x, left_y, right_x, right_y, trigger_left, trigger_right (device=joy_motion).")
+        .optional(),
+      value: z.number().describe("Axis value -1.0 to 1.0 (device=joy_motion).").optional(),
+      device_id: z.number().int().describe("Joypad device id (default 0).").optional(),
+      position: z.any().describe("Screen position {x,y} for mouse, touch, and gesture events.").optional(),
+      relative: z.any().describe("Relative motion {x,y} (mouse_motion, touch_drag).").optional(),
+      index: z.number().int().describe("Touch finger index (touch, touch_drag, default 0).").optional(),
+      double_tap: z.boolean().describe("Mark the touch as a double tap (device=touch).").optional(),
+      velocity: z.any().describe("Drag velocity {x,y} (device=touch_drag).").optional(),
+      factor: z.number().describe("Magnification factor (device=magnify).").optional(),
+      delta: z.any().describe("Pan delta {x,y} (device=pan).").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   );
@@ -351,6 +374,14 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     },
     async ({ cursor }) => textResult(events.since(cursor ?? 0)),
   );
+
+  registerGameAnimationTools(server, manager);
+  registerGamePhysicsTools(server, manager);
+  registerGameRenderTools(server, manager);
+  registerGameAudioTools(server, manager);
+  registerGameTilemapTools(server, manager);
+  registerGameWindowTools(server, manager);
+  registerGameTreeTools(server, manager);
 
   registerClassDbTools(server, manager);
   registerEditorSceneTools(server, manager);

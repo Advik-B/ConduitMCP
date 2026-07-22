@@ -121,6 +121,13 @@ impl HandlerRegistry {
         handlers.insert("gd_set_time_scale", runtime::lifecycle::set_time_scale);
         handlers.insert("gd_find_nodes", runtime::query::find_nodes);
         handlers.insert("gd_classdb", classdb::classdb);
+        handlers.insert("gd_animation", runtime::animation::animation);
+        handlers.insert("gd_physics", runtime::physics::physics);
+        handlers.insert("gd_render", runtime::render::render);
+        handlers.insert("gd_audio", runtime::audio::audio);
+        handlers.insert("gd_tilemap", runtime::systems2d3d::tilemap);
+        handlers.insert("gd_window", runtime::system::window);
+        handlers.insert("gd_tree_mutate", runtime::mutate::tree_mutate);
         HandlerRegistry { handlers }
     }
 
@@ -221,6 +228,30 @@ mod tests {
     fn classdb_registers_in_both_personalities() {
         assert!(HandlerRegistry::editor().tool_names().contains(&"gd_classdb"));
         assert!(HandlerRegistry::game().tool_names().contains(&"gd_classdb"));
+    }
+
+    #[test]
+    fn game_registry_includes_phase8_tools() {
+        let names = HandlerRegistry::game().tool_names();
+        for tool in [
+            "gd_animation",
+            "gd_physics",
+            "gd_render",
+            "gd_audio",
+            "gd_tilemap",
+            "gd_window",
+            "gd_tree_mutate",
+        ] {
+            assert!(names.contains(&tool), "{tool} must be registered on the game bridge");
+        }
+    }
+
+    #[test]
+    fn phase8_tools_stay_off_the_editor_bridge() {
+        let names = HandlerRegistry::editor().tool_names();
+        for tool in ["gd_animation", "gd_physics", "gd_tree_mutate"] {
+            assert!(!names.contains(&tool), "{tool} must not be registered on the editor bridge");
+        }
     }
 
     #[test]
