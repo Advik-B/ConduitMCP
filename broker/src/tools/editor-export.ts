@@ -23,4 +23,14 @@ export function registerEditorExportTools(server: McpServer, manager: BridgeMana
     { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     EXPORT_TIMEOUT_MS,
   );
+
+  editorTool(
+    "gd_export_presets",
+    "List the project's export presets from export_presets.cfg: name, platform, runnable flag, export path, and resource filters. A project with no presets returns an empty list.",
+    {
+      limit: z.number().int().min(1).describe("Page size (default 50).").optional(),
+      offset: z.number().int().min(0).describe("Start offset from a previous next_offset.").optional(),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  );
 }

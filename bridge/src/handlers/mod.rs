@@ -93,6 +93,8 @@ impl HandlerRegistry {
         handlers.insert("gd_file_move", editor::files::move_file);
         handlers.insert("gd_file_delete", editor::files::delete);
         handlers.insert("gd_export_project", editor::import_export::export_project);
+        handlers.insert("gd_export_presets", editor::import_export::export_presets);
+        handlers.insert("gd_editor_quit", editor::session::editor_quit);
         handlers.insert("gd_classdb", classdb::classdb);
         HandlerRegistry { handlers }
     }
@@ -128,6 +130,11 @@ impl HandlerRegistry {
         handlers.insert("gd_tilemap", runtime::systems2d3d::tilemap);
         handlers.insert("gd_window", runtime::system::window);
         handlers.insert("gd_tree_mutate", runtime::mutate::tree_mutate);
+        handlers.insert("gd_project_tools_list", runtime::project_tools::tools_list);
+        handlers.insert("gd_project_call", runtime::project_tools::project_call);
+        handlers.insert("gd_http_request", runtime::net::http_request);
+        handlers.insert("gd_websocket", runtime::net::websocket);
+        handlers.insert("gd_multiplayer", runtime::net::multiplayer);
         HandlerRegistry { handlers }
     }
 
@@ -250,6 +257,30 @@ mod tests {
     fn phase8_tools_stay_off_the_editor_bridge() {
         let names = HandlerRegistry::editor().tool_names();
         for tool in ["gd_animation", "gd_physics", "gd_tree_mutate"] {
+            assert!(!names.contains(&tool), "{tool} must not be registered on the editor bridge");
+        }
+    }
+
+    #[test]
+    fn editor_registry_includes_phase9_session_tools() {
+        let names = HandlerRegistry::editor().tool_names();
+        for tool in ["gd_export_presets", "gd_editor_quit"] {
+            assert!(names.contains(&tool), "{tool} must be registered on the editor bridge");
+        }
+    }
+
+    #[test]
+    fn game_registry_includes_phase9_tools() {
+        let names = HandlerRegistry::game().tool_names();
+        for tool in ["gd_project_tools_list", "gd_project_call", "gd_http_request", "gd_websocket", "gd_multiplayer"] {
+            assert!(names.contains(&tool), "{tool} must be registered on the game bridge");
+        }
+    }
+
+    #[test]
+    fn phase9_game_tools_stay_off_the_editor_bridge() {
+        let names = HandlerRegistry::editor().tool_names();
+        for tool in ["gd_project_tools_list", "gd_project_call", "gd_http_request", "gd_websocket", "gd_multiplayer"] {
             assert!(!names.contains(&tool), "{tool} must not be registered on the editor bridge");
         }
     }

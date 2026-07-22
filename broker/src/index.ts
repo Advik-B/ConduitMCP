@@ -29,8 +29,11 @@ import { registerEditorSceneTools } from "./tools/editor-scene.ts";
 import { registerEditorScriptTools } from "./tools/editor-script.ts";
 import { registerEditorStateTools } from "./tools/editor-state.ts";
 import { registerEditorWiringTools } from "./tools/editor-wiring.ts";
+import { ProjectToolsRegistry, type ToolEntry } from "./tools/project-tools.ts";
+import { registerSessionTools } from "./tools/session.ts";
 import { registerGameAnimationTools } from "./tools/game-animation.ts";
 import { registerGameAudioTools } from "./tools/game-audio.ts";
+import { registerGameNetTools } from "./tools/game-net.ts";
 import { registerGamePhysicsTools } from "./tools/game-physics.ts";
 import { registerGameRenderTools } from "./tools/game-render.ts";
 import { registerGameTilemapTools } from "./tools/game-tilemap.ts";
@@ -58,6 +61,8 @@ interface Config {
   editorEndpoint: Endpoint;
   enablePixelTools: boolean;
   enableEditorEval: boolean;
+  disableEval: boolean;
+  godotBin: string | null;
 }
 
 /** Whether a boolean CLI flag is present in the process arguments. */
@@ -65,9 +70,25 @@ function hasCliFlag(name: string): boolean {
   return process.argv.slice(2).includes(name);
 }
 
+/** The value of a `--name value` or `--name=value` CLI argument, if present. */
+function cliValue(name: string): string | null {
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === name) {
+      return argv[i + 1] ?? null;
+    }
+    if (arg?.startsWith(`${name}=`)) {
+      return arg.slice(name.length + 1);
+    }
+  }
+  return null;
+}
+
 function resolveConfig(): Config {
   const runtimeDir = process.env.CONDUIT_RUNTIME_DIR || os.tmpdir();
-  const projectPath = process.env.CONDUIT_PROJECT ?? null;
+  // CLI flags take precedence over environment variables (whitepaper section 15).
+  const projectPath = cliValue("--project") ?? process.env.CONDUIT_PROJECT ?? null;
   const override = process.env.CONDUIT_SOCK;
   const resolvedEndpoint: Endpoint | null = override
     ? editorEndpointFromOverride(override)
@@ -75,18 +96,31 @@ function resolveConfig(): Config {
       ? editorEndpoint(runtimeDir, projectPath)
       : null;
   if (!resolvedEndpoint) {
-    throw new Error("set CONDUIT_SOCK or CONDUIT_PROJECT so the broker can locate the editor bridge");
+    throw new Error("set --project, CONDUIT_PROJECT, or CONDUIT_SOCK so the broker can locate the editor bridge");
   }
-  // CLI flags take precedence over environment variables (whitepaper section 15).
   const enablePixelTools = hasCliFlag("--enable-pixel-tools") || !!process.env.CONDUIT_ENABLE_PIXEL_TOOLS;
   const enableEditorEval = hasCliFlag("--enable-editor-eval") || !!process.env.CONDUIT_ENABLE_EDITOR_EVAL;
-  return { runtimeDir, projectPath, editorEndpoint: resolvedEndpoint, enablePixelTools, enableEditorEval };
+  const disableEval = hasCliFlag("--disable-eval") || !!process.env.CONDUIT_DISABLE_EVAL;
+  const godotBin = cliValue("--godot") ?? process.env.CONDUIT_GODOT ?? null;
+  return {
+    runtimeDir,
+    projectPath,
+    editorEndpoint: resolvedEndpoint,
+    enablePixelTools,
+    enableEditorEval,
+    disableEval,
+    godotBin,
+  };
 }
 
 /** Tool-surface options resolved from configuration. */
 export interface ToolOptions {
   enablePixelTools: boolean;
   enableEditorEval: boolean;
+  disableEval: boolean;
+  godotBin: string | null;
+  projectPath: string | null;
+  runtimeDir: string;
 }
 
 export function registerTools(server: McpServer, manager: BridgeManager, events: EventRing, options: ToolOptions): void {
@@ -110,10 +144,14 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     },
     async ({ scene }) => {
       try {
+        // Snapshot before the play request: the background discovery loop may
+        // adopt the new game before waitForGame runs, so "new" is measured
+        // against the instances known before the launch.
+        const known = manager.knownGamePids();
         const playArgs = scene ? { scene } : {};
         const playResult = (await manager.editorRequest("gd_play", playArgs, DEFAULT_TIMEOUT_MS)) as Record<string, unknown>;
         try {
-          const instance = await manager.waitForGame(GAME_CONNECT_TIMEOUT_MS);
+          const instance = await manager.waitForGame(GAME_CONNECT_TIMEOUT_MS, known);
           return textResult({
             ...playResult,
             game_bridge_connected: true,
@@ -202,13 +240,18 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   );
 
-  gameTool(
-    "gd_game_eval",
-    "Evaluate a GDScript snippet in the running game and return the result. Supports await; the call resolves when the coroutine completes. Arbitrary code, so highest capability and highest risk.",
-    { source: z.string().describe("GDScript to run; prefix with 'return' or include a return statement to yield a value.") },
-    { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    AWAIT_TIMEOUT_MS,
-  );
+  // Eval-class surface: gd_game_eval and everything with equivalent authority
+  // (editor eval, project-defined tools, networking) drops together under
+  // --disable-eval for restricted deployments (whitepaper sections 9 and 15).
+  if (!options.disableEval) {
+    gameTool(
+      "gd_game_eval",
+      "Evaluate a GDScript snippet in the running game and return the result. Supports await; the call resolves when the coroutine completes. Arbitrary code, so highest capability and highest risk.",
+      { source: z.string().describe("GDScript to run; prefix with 'return' or include a return statement to yield a value.") },
+      { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      AWAIT_TIMEOUT_MS,
+    );
+  }
 
   gameTool(
     "gd_signal",
@@ -382,6 +425,17 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   registerGameTilemapTools(server, manager);
   registerGameWindowTools(server, manager);
   registerGameTreeTools(server, manager);
+  // Networking reaches outside the machine on the agent's behalf: eval-class
+  // (section 9), dropped together with gd_game_eval.
+  if (!options.disableEval) {
+    registerGameNetTools(server, manager);
+  }
+
+  registerSessionTools(server, manager, {
+    godotBin: options.godotBin,
+    projectPath: options.projectPath,
+    runtimeDir: options.runtimeDir,
+  });
 
   registerClassDbTools(server, manager);
   registerEditorSceneTools(server, manager);
@@ -403,21 +457,38 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   }
 
   // Editor-process evaluation: opt-in for the same reason (section 9); it runs
-  // arbitrary code with the editor's authority over the project.
-  if (options.enableEditorEval) {
+  // arbitrary code with the editor's authority over the project. --disable-eval
+  // wins over the opt-in: enabling game eval never implies editor eval, and
+  // disabling eval drops both (section 9).
+  if (options.enableEditorEval && !options.disableEval) {
     registerEditorEvalTools(server, manager);
   }
 }
 
 async function main(): Promise<void> {
   const config = resolveConfig();
-  const server = new McpServer({ name: "conduit", version: "0.2.0" });
+  const server = new McpServer({ name: "conduit", version: "0.3.0" });
+
+  // Assigned after registerTools; the ring's notify closure runs only once
+  // events start flowing, which is after main() finishes wiring.
+  let projectTools: ProjectToolsRegistry | null = null;
 
   const events = new EventRing(256, (event) => {
     try {
       server.server.sendLoggingMessage({ level: "info", logger: "conduit", data: event });
     } catch {
       // The client may not have enabled logging, or the transport is not up yet.
+    }
+    // Game lifecycle drives the dynamic gd_project_* surface (phase 9).
+    if (projectTools) {
+      if (event.type === "game_started") {
+        projectTools.refreshFromGame().catch((error) => log(`project tool refresh failed: ${String(error)}`));
+      } else if (event.type === "project_tools_changed") {
+        const data = event.data as { tools?: ToolEntry[] };
+        projectTools.sync(Array.isArray(data?.tools) ? data.tools : []);
+      } else if (event.type === "game_exited") {
+        projectTools.clear();
+      }
     }
   });
 
@@ -429,19 +500,40 @@ async function main(): Promise<void> {
     events,
   });
 
+  // An absent editor is not fatal: gd_project_scaffold and gd_editor_launch
+  // exist precisely for sessions that start before any editor does (section 8),
+  // and the background reconnect adopts an editor whenever one appears.
   log(`connecting to editor bridge at ${endpointKey(config.editorEndpoint)}`);
-  const hello = await manager.connectEditor();
-  log(`connected to editor bridge (engine ${hello.engine_version})`);
+  try {
+    const hello = await manager.connectEditor();
+    log(`connected to editor bridge (engine ${hello.engine_version})`);
+  } catch (error) {
+    log(`editor bridge not available yet (${error instanceof Error ? error.message : String(error)}); continuing without it`);
+  }
+  manager.startEditorReconnect();
+  manager.startGameDiscovery();
 
   registerTools(server, manager, events, {
     enablePixelTools: config.enablePixelTools,
     enableEditorEval: config.enableEditorEval,
+    disableEval: config.disableEval,
+    godotBin: config.godotBin,
+    projectPath: config.projectPath,
+    runtimeDir: config.runtimeDir,
   });
+  // Project-defined tools execute project code, so they are eval-class and
+  // disabled together with gd_game_eval (section 9).
+  if (!config.disableEval) {
+    projectTools = new ProjectToolsRegistry(server, manager);
+  }
   if (config.enablePixelTools) {
     log("pixel tools enabled (tier-3 editor fallback)");
   }
-  if (config.enableEditorEval) {
+  if (config.enableEditorEval && !config.disableEval) {
     log("editor eval enabled (gd_editor_eval)");
+  }
+  if (config.disableEval) {
+    log("eval-class tools disabled (gd_game_eval, gd_editor_eval, networking, project tools)");
   }
 
   const transport = new StdioServerTransport();

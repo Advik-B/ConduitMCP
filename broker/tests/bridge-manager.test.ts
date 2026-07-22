@@ -63,3 +63,52 @@ describe("game_breaked gating", () => {
     expect(status.debug.session_id).toBe(2);
   });
 });
+
+describe("phase 9 session lifecycle", () => {
+  test("ensureEditorConnected reports editor_unavailable after its deadline", async () => {
+    // A loopback TCP endpoint with nothing listening: under bun test on
+    // Windows a failed named-pipe connect escapes the harness as an uncaught
+    // error (Bun runtime quirk; the standalone runtime handles it), while a
+    // refused TCP connect is delivered normally on every platform.
+    const manager = new BridgeManager({
+      editorEndpoint: { host: "127.0.0.1", port: 59_987 },
+      runtimeDir: "/tmp",
+      projectPath: null,
+      timeoutMs: 1000,
+      events: new EventRing(16),
+    });
+    expect(await expectRejectCode(manager.ensureEditorConnected(400))).toBe("editor_unavailable");
+    expect(manager.isEditorConnected()).toBe(false);
+  });
+
+  test("waitForGame times out with game_not_running when nothing appears", async () => {
+    const manager = makeManager();
+    expect(await expectRejectCode(manager.waitForGame(400))).toBe("game_not_running");
+  });
+
+  test("background loops are idempotent and stoppable", () => {
+    const manager = makeManager();
+    manager.startEditorReconnect(50);
+    manager.startEditorReconnect(50);
+    manager.startGameDiscovery(50);
+    manager.startGameDiscovery(50);
+    manager.stopBackground();
+    manager.stopBackground();
+  });
+
+  test("the editor process handle is held and clearable", () => {
+    const manager = makeManager();
+    expect(manager.getEditorProcess()).toBeNull();
+    const proc = { pid: 1, exitCode: null, kill: () => true, once: () => proc };
+    manager.setEditorProcess(proc);
+    expect(manager.getEditorProcess()).toBe(proc);
+    manager.setEditorProcess(null);
+    expect(manager.getEditorProcess()).toBeNull();
+  });
+
+  test("knownGamePids snapshots are independent of later state", () => {
+    const manager = makeManager();
+    const snapshot = manager.knownGamePids();
+    expect(snapshot.size).toBe(0);
+  });
+});

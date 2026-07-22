@@ -84,9 +84,10 @@ The proven Unix non-blocking loop is left unchanged. An opt-in loopback TCP
 fallback (`CONDUIT_TCP`) exists for the editor connection.
 
 One shutdown caveat: a Windows reader thread parked in a blocking read is
-detached, not joined, so `Listener::stop()` never hangs; it ends when the peer
-disconnects or the process exits. This is fine for the editor-exit and
-process-exit cases that actually occur.
+detached, not joined, so joining it can never hang `Listener::stop()`; it ends
+when the peer disconnects or the process exits. Phase 9 found a different stop
+hazard in this same function (a second stop from Drop blocking in the wake
+connect) and made `stop()` idempotent; see the phase 9 section.
 
 ## Windows debug pack export cannot include the out-of-project bridge library
 
@@ -148,10 +149,12 @@ loop internally while it runs; calling it risks re-entering the dispatcher
 while our own borrow is on the stack. Use non-blocking `scan()`/
 `scan_sources()` plus polling `is_scanning()` instead.
 
-`Object` has no public `set_script`/`get_script` in this gdext version (only
-`pub(crate) raw_set_script`/`raw_get_script`). `script` is reached through the
-generic dynamic property API (`add_do_property`/`add_undo_property(node,
-"script", variant)`), the same mechanism as any other property.
+An earlier form of this note claimed `Object` has no public
+`set_script`/`get_script`; that is stale. gdext 0.5.4 provides both as
+type-safe replacements (`get_script() -> Option<Gd<Script>>`), and phase 9's
+project-tools discovery uses them. The undo-wrapped `script` property writes
+here still go through the generic dynamic property API because undo recording
+needs a property, not a setter call.
 
 UID dependent-reference reporting on `gd_file_move` is not implemented: no
 reverse-dependency query was found at the `EditorFileSystem`/`EditorInterface`
@@ -536,3 +539,94 @@ and fed through `parse_input_event` reach `_input` handlers in a headless game
 (verified live via the fixture's gesture capture). Debug draw is state-only
 headless: the ops track and expire primitives (verified), but pixels are
 rendering-exempt per the acceptance carve-out.
+
+## Phase 9: project-defined tools and session lifecycle
+
+All verified live against Godot 4.7.1 headless by `bun run phase9`: part A
+scaffolds an empty temp directory and drives a broker started with no editor
+at all; parts B through D run against the example project with bare headless
+games adopted by the broker's background discovery.
+
+### An idempotent listener stop, or a clean editor exit hangs
+
+`Listener::stop()` used to run its full body twice: once from the explicit
+`BridgeCore::stop()` and again from the `Drop` impl on the same object. The
+second `wake_accept` connects to the pipe name after the accept thread is
+gone; with a broker client still holding the old instance open, Windows
+`WaitNamedPipe` blocks forever and editor shutdown never finishes. This made
+`SceneTree.quit()` look ignored by the editor (the main loop had exited; the
+process just could not die). `stop()` now takes the join handle first and
+returns immediately when it is already gone. With that fixed,
+`SceneTree.quit()` cleanly terminates a headless editor (exit code 0), so
+`gd_editor_quit` uses it directly: unlike the window-manager close request it
+never raises a save-confirmation dialog, matching the tool contract that
+unsaved editor state is discarded. The quit itself is deferred behind a
+frame-count plus wall-clock schedule so the response frame flushes first, and
+a grace-period self-kill (`OS.kill(OS.get_process_id())`) backstops a stalled
+shutdown.
+
+### Export presets list through ConfigFile
+
+gdext exposes `EditorExportPreset` as a class but no scriptable entry point
+enumerates the configured presets (no `EditorExport` singleton is bound).
+`gd_export_presets` reads `res://export_presets.cfg` through `ConfigFile`,
+Godot's own serialisation of its own file. Sections are filtered to exactly
+`preset.<digits>` so the sibling `preset.N.options` tables never list; a
+missing file is an empty list, not an error.
+
+### The scaffold copies the bridge library into addons/conduit
+
+`gd_project_scaffold` copies the built library next to its generated
+`.gdextension` instead of pointing at the cargo target directory the way the
+example project's root manifest does. A temp-directory scaffold on Windows
+can sit on a different drive than the repo, where no `res://../` relative
+path exists at all, and the copy matches the section 15 addon layout. The
+manifest writes only the host platform's keys (debug and release both mapped
+to the one copied file) because a wrong key fails silently: the extension
+just never loads and `gd_ping` times out with nothing in the log. Verified
+live: broker and bridge derive the same endpoint hash from the absolute temp
+path (`canonical_project_key` agreement), and a cold project's first headless
+open binds the bridge in five to ten seconds, well inside the sixty-second
+launch window.
+
+### Game discovery is single-owner
+
+The broker's background discovery loop is the only code that connects to
+newly advertised game endpoints; `waitForGame` funnels through the same
+guarded scan instead of racing its own clients onto the pipe (fatal under
+the Windows one-client-per-pipe constraint). This is also what adopts games
+launched externally with the opt-in flag (section 7.5): the phase 9 eval
+never calls `gd_play`.
+
+### Project tool signatures come from get_script_method_list
+
+Instance `get_method_list` includes every inherited engine method;
+`node.get_script().get_script_method_list()` yields script-declared methods
+only, in the same dictionary shape ClassDB uses, so the classdb parsing
+helpers are shared. The `args` entry arrives as a typed `Array[Dictionary]`,
+which gdext's strict conversions reject as `VarArray`; both shapes are
+accepted (the same both-shapes guard `classdb::args_json` needed). Untyped
+GDScript parameters report type NIL and surface as `Variant` (`z.any()` at
+the broker); a coroutine (awaiting) project method returns its function-state
+object, not the awaited value, so projects needing awaited results wrap them
+in `gd_game_eval`.
+
+### WebSocketPeer and HTTPRequest ride existing machinery
+
+`WebSocketPeer` makes no progress unless polled, so the game bridge's
+`_process` services every open connection each frame and drains packets into
+bounded drop-oldest inboxes. `HTTPRequest` completes through its
+`request_completed` signal into a native sink polled by a `PendingOp`,
+exactly the `gd_game_eval` deferred-completion pattern. ENet goes through
+the tree's MultiplayerAPI, which the SceneTree polls itself; the eval's
+cross-instance server/client leg is deliberately non-fatal in the runner
+because networking is outside the phase 9 acceptance criterion.
+
+### Failed pipe connects escape bun test on Windows
+
+Under `bun test` (1.3.x) on Windows, a failed named-pipe connect fails the
+running test as an uncaught error even with an `error` handler attached and
+the promise rejection awaited in a try/catch; the standalone runtime handles
+the same code correctly (every eval proves it). The bridge-manager unit test
+for `ensureEditorConnected` therefore probes a refused loopback TCP connect,
+which is delivered normally on every platform.

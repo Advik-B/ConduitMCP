@@ -32,6 +32,16 @@ interface GameInstance {
   key: string;
 }
 
+// Minimal shape of a spawned editor process (structurally satisfied by
+// node:child_process ChildProcess), so gd_editor_quit can confirm exit and
+// kill as a fallback without coupling the manager to the spawn site.
+export interface EditorProcess {
+  pid?: number;
+  exitCode: number | null;
+  kill(signal?: NodeJS.Signals | number): boolean;
+  once(event: "exit", listener: (...args: unknown[]) => void): unknown;
+}
+
 function log(message: string): void {
   process.stderr.write(`conduit-broker: ${message}\n`);
 }
@@ -54,40 +64,126 @@ export class BridgeManager {
   // (whitepaper section 6.9). One global flag, not per-pid: debug sessions are
   // editor-session-scoped and not mapped to a game pid (docs/api-gaps.md).
   private debug: { breaked: boolean; sessionId: number | null } = { breaked: false, sessionId: null };
+  // Single-flight guards: one editor connect attempt and one endpoint scan at a
+  // time. Two BridgeClients racing one endpoint is fatal on Windows, where a
+  // bridge pipe serves one client at a time (docs/api-gaps.md).
+  private connecting = false;
+  private scanning = false;
+  private reconnectTimer: ReturnType<typeof setInterval> | null = null;
+  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private editorProcess: EditorProcess | null = null;
 
   constructor(private readonly options: BridgeManagerOptions) {}
 
   async connectEditor(retryMs = 10_000): Promise<Hello> {
-    const deadline = Date.now() + retryMs;
-    let lastError: unknown;
-    while (Date.now() < deadline) {
-      const client = new BridgeClient({ endpoint: this.options.editorEndpoint, defaultTimeoutMs: this.options.timeoutMs });
-      try {
-        await client.connect();
-        const hello = await client.waitForHello(5_000);
-        checkProtocol(hello);
-        client.onEvent = (event) => this.handleEditorEvent(event);
-        client.onClose = () => {
-          this.editor = null;
-          this.options.events.record("editor_disconnected", {});
-        };
-        this.editor = client;
-        this.editorHello = hello;
-        // Resync break state: events emitted while the broker was disconnected
-        // are dropped bridge-side, so read the current state once on connect.
-        void this.resyncDebugState();
-        return hello;
-      } catch (error) {
-        lastError = error;
-        client.close();
-        await sleep(300);
+    return this.ensureEditorConnected(retryMs);
+  }
+
+  /** Return the current editor hello, connecting (with retries) if needed. */
+  async ensureEditorConnected(timeoutMs: number): Promise<Hello> {
+    const deadline = Date.now() + timeoutMs;
+    let lastError: unknown = "no attempt made";
+    do {
+      if (this.editor && this.editorHello) {
+        return this.editorHello;
       }
-    }
+      if (!this.connecting) {
+        try {
+          return await this.attemptEditorConnect();
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      await sleep(300);
+    } while (Date.now() < deadline);
     throw new BridgeError({
       code: "editor_unavailable",
       message: `could not connect to the editor bridge at ${endpointKey(this.options.editorEndpoint)}: ${String(lastError)}`,
       retryable: true,
     });
+  }
+
+  // One connect attempt, guarded so the background reconnect loop and a
+  // foreground ensureEditorConnected never race two clients onto the endpoint.
+  private async attemptEditorConnect(): Promise<Hello> {
+    this.connecting = true;
+    const client = new BridgeClient({ endpoint: this.options.editorEndpoint, defaultTimeoutMs: this.options.timeoutMs });
+    try {
+      await client.connect();
+      const hello = await client.waitForHello(5_000);
+      checkProtocol(hello);
+      client.onEvent = (event) => this.handleEditorEvent(event);
+      client.onClose = () => {
+        this.editor = null;
+        this.options.events.record("editor_disconnected", {});
+      };
+      this.editor = client;
+      this.editorHello = hello;
+      // Resync break state: events emitted while the broker was disconnected
+      // are dropped bridge-side, so read the current state once on connect.
+      void this.resyncDebugState();
+      this.options.events.record("editor_connected", { engine_version: hello.engine_version });
+      return hello;
+    } catch (error) {
+      client.close();
+      throw error;
+    } finally {
+      this.connecting = false;
+    }
+  }
+
+  // A broker restart or transient socket failure must not require restarting
+  // Godot, and the editor may come up after the broker (gd_editor_launch), so
+  // reconnection runs in the background for the broker's lifetime (section 7.5).
+  startEditorReconnect(intervalMs = 2_000): void {
+    if (this.reconnectTimer) {
+      return;
+    }
+    this.reconnectTimer = setInterval(() => {
+      if (this.editor || this.connecting) {
+        return;
+      }
+      this.attemptEditorConnect()
+        .then((hello) => log(`editor bridge reconnected (engine ${hello.engine_version})`))
+        .catch(() => {});
+    }, intervalMs);
+    this.reconnectTimer.unref?.();
+  }
+
+  // Adopt game bridges that appear without gd_play: launched externally with
+  // the opt-in flag, per section 7.5. This loop and waitForGame share scanOnce,
+  // the single owner of endpoint connection attempts.
+  startGameDiscovery(intervalMs = 1_000): void {
+    if (this.discoveryTimer) {
+      return;
+    }
+    this.discoveryTimer = setInterval(() => {
+      void this.scanOnce();
+    }, intervalMs);
+    this.discoveryTimer.unref?.();
+  }
+
+  stopBackground(): void {
+    if (this.reconnectTimer) {
+      clearInterval(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.discoveryTimer) {
+      clearInterval(this.discoveryTimer);
+      this.discoveryTimer = null;
+    }
+  }
+
+  isEditorConnected(): boolean {
+    return this.editor != null;
+  }
+
+  setEditorProcess(proc: EditorProcess | null): void {
+    this.editorProcess = proc;
+  }
+
+  getEditorProcess(): EditorProcess | null {
+    return this.editorProcess;
   }
 
   editorRequest(tool: string, args: Record<string, unknown>, timeoutMs?: number): Promise<unknown> {
@@ -171,14 +267,21 @@ export class BridgeManager {
     return null;
   }
 
-  // Poll the runtime directory for a game socket that appeared since we last
-  // looked, connect to it, and register it as the current instance.
-  async waitForGame(timeoutMs: number): Promise<GameInstance> {
+  /** Pids of currently connected game instances (snapshot for waitForGame). */
+  knownGamePids(): Set<number> {
+    return new Set(this.games.keys());
+  }
+
+  // Wait for a game instance beyond the excluded set to connect. Scanning stays
+  // single-flight through scanOnce, so this never races the discovery loop onto
+  // an endpoint; it only accelerates the poll while a caller is waiting.
+  async waitForGame(timeoutMs: number, exclude?: Set<number>): Promise<GameInstance> {
+    const known = exclude ?? this.knownGamePids();
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      for (const endpoint of this.newGameEndpoints()) {
-        const instance = await this.tryConnectGame(endpoint);
-        if (instance) {
+      await this.scanOnce();
+      for (const [pid, instance] of this.games) {
+        if (!known.has(pid)) {
           return instance;
         }
       }
@@ -189,6 +292,22 @@ export class BridgeManager {
       message: "the game bridge did not connect; confirm the game was launched with the conduit opt-in",
       retryable: true,
     });
+  }
+
+  // The single owner of game endpoint connection attempts: no-op while another
+  // scan is in flight.
+  private async scanOnce(): Promise<void> {
+    if (this.scanning) {
+      return;
+    }
+    this.scanning = true;
+    try {
+      for (const endpoint of this.newGameEndpoints()) {
+        await this.tryConnectGame(endpoint);
+      }
+    } finally {
+      this.scanning = false;
+    }
   }
 
   // Endpoints of game bridges advertised since we last looked, scoped to this

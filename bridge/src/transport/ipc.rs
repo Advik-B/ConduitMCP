@@ -311,13 +311,19 @@ impl Listener {
         &self.display
     }
 
+    // Idempotent: an explicit stop is followed by the Drop-invoked one, and the
+    // second must not touch the endpoint again. On Windows, a wake connect
+    // against the dead listener's name can block indefinitely in WaitNamedPipe
+    // while a broker client still holds the old instance open, which turned a
+    // clean editor shutdown into a hang (observed via gd_editor_quit).
     pub fn stop(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
         self.stop.store(true, Ordering::SeqCst);
         self.wake_accept();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-        if let Some(path) = &self.cleanup {
+        let _ = handle.join();
+        if let Some(path) = self.cleanup.take() {
             let _ = std::fs::remove_file(path);
         }
     }

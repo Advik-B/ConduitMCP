@@ -167,6 +167,8 @@ pub enum BridgeError {
     NoDebugSession(String),
     #[error("{0}")]
     NotBreaked(String),
+    #[error("{0}")]
+    NetworkError(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -187,6 +189,7 @@ impl BridgeError {
             BridgeError::ExportFailed(_) => "export_failed",
             BridgeError::NoDebugSession(_) => "no_debug_session",
             BridgeError::NotBreaked(_) => "not_breaked",
+            BridgeError::NetworkError(_) => "network_error",
             BridgeError::Internal(_) => "internal_error",
         }
     }
@@ -194,8 +197,15 @@ impl BridgeError {
     pub fn retryable(&self) -> bool {
         // `busy` is transient backpressure. The debugger conditions are transient
         // too: a game not yet attached may connect, and a not-breaked session may
-        // break, so an agent can sensibly retry both.
-        matches!(self, BridgeError::Busy | BridgeError::NoDebugSession(_) | BridgeError::NotBreaked(_))
+        // break, so an agent can sensibly retry both. Network failures are
+        // transient by nature (timeouts, refused connections, drops).
+        matches!(
+            self,
+            BridgeError::Busy
+                | BridgeError::NoDebugSession(_)
+                | BridgeError::NotBreaked(_)
+                | BridgeError::NetworkError(_)
+        )
     }
 
     pub fn to_body(&self) -> ErrorBody {
@@ -294,6 +304,8 @@ mod tests {
         assert!(BridgeError::NoDebugSession("x".into()).retryable());
         assert_eq!(BridgeError::NotBreaked("x".into()).code(), "not_breaked");
         assert!(BridgeError::NotBreaked("x".into()).retryable());
+        assert_eq!(BridgeError::NetworkError("x".into()).code(), "network_error");
+        assert!(BridgeError::NetworkError("x".into()).retryable());
     }
 
     #[test]

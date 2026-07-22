@@ -13,6 +13,7 @@ use godot::classes::{INode, Node};
 use godot::prelude::*;
 
 use crate::bridge_core::BridgeCore;
+use crate::handlers::runtime::project_tools::ProjectToolsWatcher;
 use crate::handlers::HandlerRegistry;
 use crate::transport::ipc::Role;
 
@@ -21,12 +22,13 @@ use crate::transport::ipc::Role;
 pub struct ConduitRuntime {
     base: Base<Node>,
     core: BridgeCore,
+    watcher: Option<ProjectToolsWatcher>,
 }
 
 #[godot_api]
 impl INode for ConduitRuntime {
     fn init(base: Base<Node>) -> Self {
-        ConduitRuntime { base, core: BridgeCore::new(Role::Game, HandlerRegistry::game()) }
+        ConduitRuntime { base, core: BridgeCore::new(Role::Game, HandlerRegistry::game()), watcher: None }
     }
 
     fn enter_tree(&mut self) {
@@ -36,13 +38,22 @@ impl INode for ConduitRuntime {
         let mode = godot::classes::node::ProcessMode::ALWAYS;
         self.base_mut().set_process_mode(mode);
         self.core.start();
+        // The game personality's one event producer: conduit_tools set changes
+        // (whitepaper section 8, phase 9).
+        self.watcher = Some(ProjectToolsWatcher::new(self.core.event_sender()));
     }
 
     fn process(&mut self, delta: f64) {
         self.core.run_frame(delta * 1000.0);
+        if let Some(watcher) = &mut self.watcher {
+            watcher.service();
+        }
+        // WebSocketPeer makes no progress unless polled every frame.
+        crate::handlers::runtime::net::service_frame();
     }
 
     fn exit_tree(&mut self) {
+        self.watcher = None;
         self.core.stop();
     }
 }

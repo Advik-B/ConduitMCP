@@ -20,16 +20,68 @@
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
-use godot::classes::{Os, ProjectSettings};
+use godot::classes::{ConfigFile, Os, ProjectSettings};
 use godot::prelude::*;
 use serde_json::{json, Value};
 
 use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
-use crate::handlers::args::require_str;
+use crate::handlers::args::{optional_u64, require_str};
+use crate::handlers::classdb::paginate;
 use crate::handlers::editor::support::validate_project_path;
 use crate::protocol::BridgeError;
+use crate::variant_json::variant_to_json;
 
 const EXPORT_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+
+// The editor's export subsystem (EditorExportPreset and friends) has no
+// scriptable entry point for enumerating presets, so the lister reads
+// export_presets.cfg through ConfigFile: Godot's own serialisation of its own
+// file, not hand parsing (docs/api-gaps.md).
+pub fn export_presets(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
+    HandlerOutcome::Done((|| {
+        let limit = optional_u64(args, "limit").unwrap_or(50);
+        let offset = optional_u64(args, "offset").unwrap_or(0);
+
+        let mut config = ConfigFile::new_gd();
+        if config.load("res://export_presets.cfg") != godot::global::Error::OK {
+            // A project with no presets has no file; that is an empty list.
+            return Ok(paginate(Vec::new(), limit, offset));
+        }
+
+        let sections: Vec<String> = config.get_sections().as_slice().iter().map(|s| s.to_string()).collect();
+        let mut items = Vec::new();
+        for section in preset_sections(&sections) {
+            let read = |key: &str| -> Value {
+                if config.has_section_key(section.as_str(), key) {
+                    variant_to_json(&config.get_value(section.as_str(), key))
+                } else {
+                    Value::Null
+                }
+            };
+            items.push(json!({
+                "name": read("name"),
+                "platform": read("platform"),
+                "runnable": read("runnable"),
+                "export_path": read("export_path"),
+                "include_filter": read("include_filter"),
+                "exclude_filter": read("exclude_filter"),
+            }));
+        }
+        Ok(paginate(items, limit, offset))
+    })())
+}
+
+// Preset sections are exactly `preset.<digits>`; each preset's option table
+// lives in a sibling `preset.<digits>.options` section that must not list.
+fn preset_sections(sections: &[String]) -> Vec<String> {
+    sections.iter().filter(|s| is_preset_section(s)).cloned().collect()
+}
+
+fn is_preset_section(section: &str) -> bool {
+    section
+        .strip_prefix("preset.")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
 
 pub fn export_project(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     let prepared: Result<(String, String, String, &'static str), BridgeError> = (|| {
@@ -268,5 +320,14 @@ mod tests {
             &json!({ "preset": "Linux (debug)", "output_path": "res://export/game.pck", "mode": "nonsense" }),
             &ctx(),
         ));
+    }
+
+    #[test]
+    fn preset_sections_keep_presets_and_drop_option_tables() {
+        let sections: Vec<String> = ["preset.0", "preset.0.options", "preset.1", "preset.12", "preset.", "preset.x", "other"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(preset_sections(&sections), vec!["preset.0", "preset.1", "preset.12"]);
     }
 }

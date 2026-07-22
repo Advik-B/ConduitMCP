@@ -48,6 +48,8 @@ impl IEditorPlugin for ConduitBridge {
         // tick rate; re-assert full speed each frame so debugger-dock reads settle
         // promptly (see debugger::keep_editor_responsive).
         debugger::keep_editor_responsive();
+        // Fire a gd_editor_quit armed earlier, once its response has flushed.
+        crate::handlers::editor::session::poll_deferred_quit();
     }
 
     fn exit_tree(&mut self) {

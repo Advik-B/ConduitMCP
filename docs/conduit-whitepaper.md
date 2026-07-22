@@ -2,7 +2,7 @@
 
 **A design whitepaper and implementation specification**
 
-Version 0.3 (draft) · Target: Godot 4.4+ · Bridge language: Rust (gdext) · Status: in implementation (phases 1-6 landed)
+Version 0.3 (draft) · Target: Godot 4.4+ · Bridge language: Rust (gdext) · Status: implemented (phases 1-9 landed)
 
 ---
 

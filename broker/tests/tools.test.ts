@@ -25,6 +25,23 @@ function collectRegistrations(): { server: McpServer; registrations: Registratio
   return { server, registrations };
 }
 
+interface OptionOverrides {
+  enablePixelTools?: boolean;
+  enableEditorEval?: boolean;
+  disableEval?: boolean;
+}
+
+function toolOptions(overrides: OptionOverrides = {}) {
+  return {
+    enablePixelTools: overrides.enablePixelTools ?? false,
+    enableEditorEval: overrides.enableEditorEval ?? false,
+    disableEval: overrides.disableEval ?? false,
+    godotBin: null,
+    projectPath: null,
+    runtimeDir: "",
+  };
+}
+
 const EXPECTED_TOOLS = [
   "gd_animation",
   "gd_asset_add",
@@ -36,12 +53,15 @@ const EXPECTED_TOOLS = [
   "gd_editor_dialog_choose",
   "gd_editor_get_state",
   "gd_editor_inspect",
+  "gd_editor_launch",
   "gd_editor_list_dialogs",
   "gd_editor_open_script",
+  "gd_editor_quit",
   "gd_editor_screenshot",
   "gd_editor_select",
   "gd_editor_set_main_screen",
   "gd_editor_ui",
+  "gd_export_presets",
   "gd_export_project",
   "gd_file_delete",
   "gd_file_move",
@@ -51,8 +71,10 @@ const EXPECTED_TOOLS = [
   "gd_get_errors",
   "gd_get_events",
   "gd_get_logs",
+  "gd_http_request",
   "gd_input",
   "gd_input_map",
+  "gd_multiplayer",
   "gd_node_add",
   "gd_node_call",
   "gd_node_duplicate",
@@ -69,6 +91,7 @@ const EXPECTED_TOOLS = [
   "gd_ping",
   "gd_play",
   "gd_project_get_setting",
+  "gd_project_scaffold",
   "gd_project_set_setting",
   "gd_redo",
   "gd_render",
@@ -100,6 +123,7 @@ const EXPECTED_TOOLS = [
   "gd_undo",
   "gd_wait_frames",
   "gd_wait_time",
+  "gd_websocket",
   "gd_window",
 ];
 
@@ -107,22 +131,22 @@ describe("tool definitions", () => {
   const { server, registrations } = collectRegistrations();
   // The manager and events are only used inside handlers, not during registration.
   // Pixel tools are off by default, so the default surface excludes them.
-  registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing, {
-    enablePixelTools: false,
-    enableEditorEval: false,
-  });
+  registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing, toolOptions());
 
-  test("registers exactly the phase 1-8 tool surface", () => {
+  test("registers exactly the phase 1-9 tool surface", () => {
     const names = registrations.map((r) => r.name).sort();
     expect(names).toEqual(EXPECTED_TOOLS);
   });
 
-  // Phase 8 lands exactly at the ceiling (75); phase 9 must consolidate or
-  // revisit the bound with justification (section 7.1: the budget is a design
-  // pressure, not a hard cap, but this test is).
-  test("the tool surface stays within the section 7.1 budget of 40-75 tools", () => {
+  // Phase 9 revisits the section 7.1 bound as its phase-8 form anticipated: the
+  // budget is a design pressure, not a hard cap, and the phase-9 additions
+  // (session lifecycle, preset listing, three consolidated networking tools)
+  // land the static surface just above the old 75 ceiling. Dynamic
+  // gd_project_* tools are deliberately outside this count; they exist only
+  // while a game exposes them and scale with the project, not the broker.
+  test("the tool surface stays within the revised section 7.1 budget", () => {
     expect(registrations.length).toBeGreaterThanOrEqual(40);
-    expect(registrations.length).toBeLessThanOrEqual(75);
+    expect(registrations.length).toBeLessThanOrEqual(90);
   });
 
   test("every tool name is gd_-prefixed and unique", () => {
@@ -271,12 +295,9 @@ const PIXEL_TOOLS = [
   "gd_editor_window_info",
 ];
 
-function registrationsWith(options: { enablePixelTools?: boolean; enableEditorEval?: boolean }): Registration[] {
+function registrationsWith(options: OptionOverrides): Registration[] {
   const { server, registrations } = collectRegistrations();
-  registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing, {
-    enablePixelTools: options.enablePixelTools ?? false,
-    enableEditorEval: options.enableEditorEval ?? false,
-  });
+  registerTools(server, {} as unknown as BridgeManager, {} as unknown as EventRing, toolOptions(options));
   return registrations;
 }
 
@@ -338,5 +359,41 @@ describe("editor eval gating", () => {
     expect(tool?.config.annotations?.readOnlyHint).toBe(false);
     expect(tool?.config.annotations?.destructiveHint).toBe(true);
     expect(tool?.config.annotations?.openWorldHint).toBe(true);
+  });
+});
+
+// Eval-class gating (section 9): --disable-eval drops arbitrary evaluation and
+// everything with equivalent authority together. Dynamic gd_project_* tools are
+// gated in main() (the registry is never constructed), not in registerTools.
+const EVAL_CLASS_TOOLS = ["gd_game_eval", "gd_http_request", "gd_multiplayer", "gd_websocket"];
+
+describe("disable-eval gating", () => {
+  test("disabling eval removes exactly the eval-class static tools", () => {
+    const on = registrationsWith({}).map((r) => r.name);
+    const off = new Set(registrationsWith({ disableEval: true }).map((r) => r.name));
+    const removed = on.filter((name) => !off.has(name)).sort();
+    expect(removed).toEqual(EVAL_CLASS_TOOLS);
+  });
+
+  test("disable-eval wins over enable-editor-eval", () => {
+    const names = registrationsWith({ disableEval: true, enableEditorEval: true }).map((r) => r.name);
+    expect(names).not.toContain("gd_editor_eval");
+    expect(names).not.toContain("gd_game_eval");
+  });
+
+  test("session tools stay available under disable-eval", () => {
+    const names = registrationsWith({ disableEval: true }).map((r) => r.name);
+    for (const name of ["gd_project_scaffold", "gd_editor_launch", "gd_editor_quit", "gd_export_presets"]) {
+      expect(names).toContain(name);
+    }
+  });
+
+  test("networking tools are annotated destructive and open-world", () => {
+    const all = registrationsWith({});
+    for (const name of ["gd_http_request", "gd_websocket", "gd_multiplayer"]) {
+      const tool = all.find((r) => r.name === name);
+      expect(tool?.config.annotations?.destructiveHint).toBe(true);
+      expect(tool?.config.annotations?.openWorldHint).toBe(true);
+    }
   });
 });

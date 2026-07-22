@@ -61,17 +61,19 @@ fn require_class(args: &Value) -> Result<String, BridgeError> {
     Ok(class)
 }
 
-fn dict_str(dict: &VarDictionary, key: &str) -> String {
+pub(crate) fn dict_str(dict: &VarDictionary, key: &str) -> String {
     dict.get(&GString::from(key)).map(|v| v.to_string()).unwrap_or_default()
 }
 
-fn dict_i64(dict: &VarDictionary, key: &str) -> i64 {
+pub(crate) fn dict_i64(dict: &VarDictionary, key: &str) -> i64 {
     dict.get(&GString::from(key)).and_then(|v| v.try_to::<i64>().ok()).unwrap_or(0)
 }
 
 /// A readable type label for a property/argument dictionary: the class name
-/// for object types, otherwise the canonical Variant type name.
-fn type_label(dict: &VarDictionary) -> String {
+/// for object types, otherwise the canonical Variant type name. Instance
+/// method dictionaries (`get_script_method_list`) share this shape, so the
+/// project-tools handlers reuse these readers.
+pub(crate) fn type_label(dict: &VarDictionary) -> String {
     let class_name = dict_str(dict, "class_name");
     if !class_name.is_empty() {
         return class_name;
