@@ -2,7 +2,7 @@
 
 **A design whitepaper and implementation specification**
 
-Version 0.2 (draft) · Target: Godot 4.4+ · Bridge language: Rust (gdext) · Status: pre-implementation
+Version 0.3 (draft) · Target: Godot 4.4+ · Bridge language: Rust (gdext) · Status: in implementation (phases 1-6 landed)
 
 ---
 
@@ -291,14 +291,14 @@ Two protocols meet at the broker. Between agent and broker is MCP. Between broke
 The broker is a standard MCP server over stdio. It follows current MCP conventions:
 
 - Transport is stdio. The broker never writes anything but protocol frames to stdout; all its own logging goes to stderr. This is a hard rule; stray stdout output corrupts the MCP stream.
-- Tools are named in snake_case with the `gd_` service prefix and are verb-first, following the `{prefix}_{action}_{resource}` shape, for example `gd_scene_open`, `gd_node_set_property`, `gd_game_eval`, `gd_input`.
+- Tools are named in snake_case with the `gd_` service prefix and are verb-first, following the `{prefix}_{action}_{resource}` shape, for example `gd_scene_open`, `gd_node_set_property`, `gd_game_eval`, `gd_input`. Where an edit-time tool would otherwise collide with a game-bridge name, the game bridge keeps the bare inspection name (`gd_node_get_property`, `gd_tree_get`, `gd_find_nodes`) and the edit-time equivalent takes a `gd_scene_` prefix meaning the edited scene (`gd_scene_node_get_property`, `gd_scene_tree_get`, `gd_scene_find_nodes`). Established editor structure mutations (`gd_node_add` and its family) keep their bare names because no game tool claims them.
 - Each tool declares a JSON input schema with per-field descriptions and constraints, and, where the return is structured, an output schema so clients can process results.
 - Each tool carries annotations: `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`, set truthfully so the agent and client can reason about safety. Read tools (`gd_node_get_property`, `gd_get_logs`) are `readOnlyHint: true`. Mutating tools default to `destructiveHint: true` unless they are clearly non-destructive. `gd_game_eval` is `destructiveHint: true` and `openWorldHint: true` because arbitrary code can do anything.
 - List-style tools accept a `limit` and return pagination metadata (`has_more`, `next_offset` or `next_cursor`, `total_count`), defaulting to a bounded page so large scenes or file trees do not flood the context.
 - Tools that return data support both a compact JSON form and a human-readable Markdown form, with Markdown as the default for readability and JSON available for precise downstream processing.
 - Binary results use MCP content types rather than inline text: screenshots return as image content blocks so clients render them and models perceive them natively. Base64-in-JSON is reserved for the internal bridge protocol, where it is a transport detail.
 
-Capability parity does not mean tool-count parity. The ~149-tool prior-art surface is the right *capability* checklist and the wrong *tool* count: MCP clients inject every tool schema into the model's context, and a surface that large taxes the context window and measurably degrades tool selection. Conduit therefore consolidates aggressively. One tool with an enumerated discriminator replaces families of near-duplicates — `gd_input` with a device and action shape rather than eight separate input tools, `gd_debug` with an `op` of `set_breakpoint | clear_breakpoint | list_breakpoints | break | continue | step_over | step_into | stack | vars` — while genuinely distinct operations stay separate. The working budget is roughly 40 to 60 tools covering the full section 8 taxonomy, with schema descriptions doing the disambiguation work. Where a consolidated tool would need a discriminated union too awkward to describe well, it is split; the budget is a design pressure, not a hard cap.
+Capability parity does not mean tool-count parity. The ~149-tool prior-art surface is the right *capability* checklist and the wrong *tool* count: MCP clients inject every tool schema into the model's context, and a surface that large taxes the context window and measurably degrades tool selection. Conduit therefore consolidates aggressively. One tool with an enumerated discriminator replaces families of near-duplicates — `gd_input` with a device and action shape rather than eight separate input tools, `gd_debug` with an `op` of `set_breakpoint | clear_breakpoint | list_breakpoints | break | continue | step_over | step_into | stack | vars` — while genuinely distinct operations stay separate. The working budget is roughly 40 to 75 tools covering the full section 8 taxonomy, with schema descriptions doing the disambiguation work; phases 7 through 9 grow the surface toward the upper bound, and the consolidation discipline is what keeps it there rather than at prior art's tool counts. Where a consolidated tool would need a discriminated union too awkward to describe well, it is split; the budget is a design pressure, not a hard cap.
 
 The recommended broker implementation language is TypeScript, using the official MCP TypeScript SDK, because the SDK is mature, the schemas are expressible with Zod, and agents generate and lint TypeScript well. Rust or Python brokers are viable; the choice does not affect the bridge.
 
@@ -348,7 +348,7 @@ An error response:
 }
 ```
 
-Variant typing is explicit. Godot's richer types (`Vector2`, `Vector3`, `Color`, `Quaternion`, `Basis`, `Transform2D`, `Transform3D`, `AABB`, `Rect2`, and the packed array types) are encoded as tagged JSON objects with a `__type` discriminator and the constituent fields, so the bridge can convert to and from the correct `Variant` without guessing. Where a target property's type is known from the node's `get_property_list`, the bridge uses that to coerce plain JSON numbers and arrays into the right type as a convenience, but the tagged form is always accepted and is unambiguous. Packed arrays serialise as JSON arrays of their element type, never as opaque strings.
+Variant typing is explicit. Godot's richer types (`Vector2`, `Vector3`, `Color`, `Quaternion`, `Basis`, `Transform2D`, `Transform3D`, `AABB`, `Rect2`, and the packed array types) are encoded as tagged JSON objects with a `__type` discriminator and the constituent fields, so the bridge can convert to and from the correct `Variant` without guessing. Where a target property's type is known from the node's `get_property_list`, the bridge uses that to coerce plain JSON numbers and arrays into the right type as a convenience, but the tagged form is always accepted and is unambiguous. Packed arrays serialise as JSON arrays of their element type, never as opaque strings. A resource-valued property is encoded as `{"__type": "Resource", "path": "res://..."}`: the bridge decodes it by loading the path through `ResourceLoader` (confined to `res://` and `user://` per section 9) and encodes a resource-typed value back to the same form with its class name and resource path.
 
 ### 7.4 Error model
 
@@ -370,21 +370,23 @@ Every tool that can return unbounded data has an explicit bound with a sane defa
 
 The tool surface is organised into groups. This is a parity target, not an initial scope; section 10 sequences which groups land in which phase. Group names map onto the prior-art capability list so nothing is forgotten. Tool counts are indicative.
 
-**Project and session (editor bridge).** Get engine version and project metadata, list project files with filtering and pagination, read and modify project settings, manage autoloads, manage the input map, manage export presets, set the main scene, and enable or disable editor plugins. Launch, run, and stop the game (`gd_play`, `gd_stop`), which is also the mechanism that brings the game bridge online. Editor lifecycle sits here too: `gd_editor_launch` (the broker spawns `godot -e --path <project>` with a configured engine binary and waits for the bridge to connect), `gd_editor_quit`, and `gd_project_scaffold`, a broker-side tool that creates a minimal new project — a `project.godot`, the bridge addon folder, and the `.gdextension` — so an agent can start from an empty directory, the one capability that by definition cannot require an already-running editor.
+**Project and session (editor bridge).** Get engine version and project metadata, list project files with filtering and pagination, read and modify project settings, manage autoloads (`gd_autoload`) and the input map (`gd_input_map`) — both are settings-file-backed writes to `project.godot`, not undo-wrapped editor state — manage export presets, set the main scene, and enable or disable editor plugins. Launch, run, and stop the game (`gd_play`, `gd_stop`), which is also the mechanism that brings the game bridge online. Editor lifecycle sits here too: `gd_editor_launch` (the broker spawns `godot -e --path <project>` with a configured engine binary and waits for the bridge to connect), `gd_editor_quit`, and `gd_project_scaffold`, a broker-side tool that creates a minimal new project — a `project.godot`, the bridge addon folder, and the `.gdextension` — so an agent can start from an empty directory, the one capability that by definition cannot require an already-running editor.
 
-**API introspection (both bridges).** Query the engine's `ClassDB` and version info: list classes, get a class's properties, methods with argument and return types, signals, constants, and enums, resolve inheritance, and check whether a class or method exists. This grounds the agent in the exact engine build it is driving rather than in its training data, is cheap and read-only, and is available identically at edit time and runtime.
+**API introspection (both bridges).** Query the engine's `ClassDB` and version info: list classes, get a class's properties, methods with argument and return types, signals, constants, and enums, resolve inheritance, and check whether a class or method exists. This grounds the agent in the exact engine build it is driving rather than in its training data, is cheap and read-only, and is available identically at edit time and runtime. Consolidated as `gd_classdb` with an op discriminator and paginated member listings. The handler is registered in both bridge personalities; the broker registers the single tool routed to its editor connection, which is always present, since the reflection data is identical in both processes.
 
-**Scene structure (editor bridge, undo-wrapped).** Create a scene with a chosen root type, add and remove nodes, reparent, rename, duplicate, attach and detach scripts, read the full scene tree as JSON, and save scenes. Every mutation goes through `EditorUndoRedoManager`.
+**Scene structure (editor bridge, undo-wrapped).** Create a scene with a chosen root type, add and remove nodes (with optional initial property values on add), reparent, rename, duplicate, attach and detach scripts, read and write individual node properties on the edited scene (`gd_scene_node_get_property`, `gd_scene_node_set_property`), instantiate another scene as a child (`gd_scene_instantiate`, which sets the owner on the instance root only so the instance's internal nodes stay owned by their own scene), connect and disconnect persisted signal connections (`gd_scene_signal`, always `CONNECT_PERSIST`), manage persistent node groups (`gd_node_group`), search the edited scene by class, group, or name pattern (`gd_scene_find_nodes`), read the full scene tree as JSON, and save scenes. Every mutation goes through `EditorUndoRedoManager`.
 
 **Scripts and resources (editor bridge).** Create a script from a template, read and write script files through the editor's file handling, create and modify `.tres` and `.res` resources through `ResourceLoader`/`ResourceSaver`, create and read shaders and themes, and manage translations. File operations trigger a filesystem rescan; moves and renames are UID-aware per section 6.5. Script edits pair with `gd_script_validate`, which reloads the script through the engine and returns parse and compile diagnostics with line numbers (surfaced from the editor log where the API does not return them directly), so the agent gets a compile check without running the game. Shader creation gets the same log-derived compile diagnostics.
 
 **Assets and import (editor bridge).** Read and set import settings through the import plugin surface, and export a project through a preset for CI and release builds. Asset ingestion is explicit: `gd_asset_add` writes agent-supplied bytes (base64 through the broker) to a project path, triggers the import scan, and waits for the import to settle, returning the imported resource's type and UID; `gd_asset_reimport` reimports after import-setting changes. This is how textures, audio, fonts, and models produced outside Godot enter the project through the front door instead of a raw file drop the editor discovers later.
 
-**Runtime inspection (game bridge, mostly read-only).** Get the scene tree, get detailed node info (properties, signals, methods, children), read a property, list nodes in a group, and find nodes by class.
+**Runtime inspection (game bridge, mostly read-only).** Get the scene tree, get detailed node info (properties, signals, methods, children), read a property, and find nodes by class, group, or name pattern (`gd_find_nodes`).
 
 **Runtime mutation (game bridge).** Set a property, call a method, instantiate a packed scene, remove a node, change the scene, reparent at runtime, and serialise or restore tree state.
 
 **Expression evaluation (game bridge).** `gd_game_eval` with return values and `await` support. Highest capability, highest risk.
+
+**Expression evaluation (editor bridge, opt-in, disabled by default).** `gd_editor_eval` runs GDScript inside the editor process with the same return-value and `await` support as `gd_game_eval`. It exists for the long tail of editor automation that has no dedicated tool, and because it executes with the editor's authority over the project it is registered only under an explicit opt-in flag (section 9).
 
 **Input simulation (game bridge).** Keyboard press, release, and hold; mouse move, click, drag, and scroll; touch press, release, drag, and gestures; gamepad buttons and axes; and query of current input state.
 
@@ -428,7 +430,7 @@ The bridge is a remote-code-execution surface by design: `gd_game_eval` runs arb
 
 **Error hygiene.** Internal errors are logged server-side (to the broker's or bridge's stderr and logs) and returned to the agent as structured, non-revealing messages. A handler panic is contained at the dispatcher and does not crash the engine.
 
-**Consent for dangerous tools.** The pixel fallback tools are disabled by default and must be explicitly enabled. `gd_game_eval` is annotated `destructiveHint: true` and `openWorldHint: true` so clients that gate destructive tools behind user confirmation will do so. A configuration flag can disable `gd_game_eval` entirely for deployments that want the rest of the surface without arbitrary evaluation.
+**Consent for dangerous tools.** The pixel fallback tools are disabled by default and must be explicitly enabled. `gd_game_eval` is annotated `destructiveHint: true` and `openWorldHint: true` so clients that gate destructive tools behind user confirmation will do so. A configuration flag can disable `gd_game_eval` entirely for deployments that want the rest of the surface without arbitrary evaluation. `gd_editor_eval` is stricter still: the broker registers it only when `--enable-editor-eval` or `CONDUIT_ENABLE_EDITOR_EVAL` is set, the same mechanism that gates the pixel tools, because it runs arbitrary code in the editor process and can rewrite project files. It carries the same destructive and open-world annotations, and it stays opt-in even in deployments that leave `gd_game_eval` enabled; `--disable-eval` drops it together with `gd_game_eval`, but enabling game eval never implies enabling editor eval.
 
 **Never in shipped games.** The bridge's listener activates only in the editor, or in debug builds with an explicit opt-in flag, and never in release builds (section 6.3). Release export presets additionally exclude the bridge library entirely (section 15). A released title must not contain a code-execution listener, and this is enforced in code and in the export pipeline rather than by documentation alone.
 
@@ -442,7 +444,7 @@ The bridge is a remote-code-execution surface by design: `gd_game_eval` runs arb
 
 ## 10. Implementation roadmap
 
-Six phases, each with an acceptance criterion. Build them in order. Phase 1 is small but load-bearing; do not skip its proof.
+Nine phases, each with an acceptance criterion. Build them in order. Phase 1 is small but load-bearing; do not skip its proof. Phases 1 through 6 build the architectural spine; phases 7 through 9 close the capability taxonomy of section 8.
 
 **Phase 1: Skeleton and the dispatcher.** Set up a Cargo workspace with the bridge crate (a `cdylib` using gdext) and a broker crate or package. Get the `.gdextension` loading in the editor and confirm the `EditorPlugin` instantiates. Implement the full threading and IPC plumbing from section 6.4 and prove it with a single no-op round-trip tool (`gd_ping`) that returns a constant, exercising the whole path: agent to broker to bridge inbound queue to `_process` on the main thread to outbound queue to broker to agent. Implement request-id correlation, the bounded channels, backpressure with a `busy` error, and per-request timeout in the broker.
 *Acceptance:* `gd_ping` round-trips from an MCP client through the broker into the running editor and back, with correct id correlation, and a burst of requests produces `busy` rather than unbounded memory growth.
@@ -461,6 +463,15 @@ Six phases, each with an acceptance criterion. Build them in order. Phase 1 is s
 
 **Phase 6: GUI-parity escape hatch.** Implement the bounded, disabled-by-default `gd_editor_pixel_*` tools for the residual gestures with no semantic or tier-2 equivalent, with clear warnings and annotations, guided by editor screenshots and window geometry.
 *Acceptance:* with the escape hatch explicitly enabled, an agent can perform one gesture that has no semantic equivalent (for example a specific viewport interaction), and the tools remain off by default.
+
+**Phase 7: Edit-time parity core.** Close the remaining edit-time capability gap through consolidated tools: undo-wrapped node property get and set on the edited scene, initial properties on node add, scene instancing with correct ownership, persisted signal connections and persistent groups, ClassDB introspection, node search on both bridges, autoload and input-map management, and the opt-in editor-process evaluation of section 8.
+*Acceptance:* against a headless editor, an agent sets a node property undo-wrapped and reverts it with a single undo; instantiates a second scene as a child and the saved scene file contains the instance reference; connects a persisted signal and adds a persistent group, both of which survive a save; adds and removes an autoload and an input action with a key event, observed in `project.godot`; pages through `gd_classdb` results with correct pagination metadata; finds nodes by class in a running headless game; and `gd_editor_eval` is absent from the default tool surface, present only with the opt-in flag, and evaluates an awaiting snippet inside the editor process.
+
+**Phase 8: Runtime systems parity.** The remaining game-bridge groups of section 8: animation, physics and navigation, rendering and environment, audio, TileMap and GridMap cells, window and system control, touch and gamepad input, and runtime scene mutation (instantiate a packed scene, free a node, change scene, reparent). Prerequisite: extend the tagged Variant conversion to the matrix and transform types (`Transform2D`, `Transform3D`, `Basis`, `AABB`, `Plane`, `Projection`) in both directions.
+*Acceptance:* an agent plays an animation and reads back its progress, raycasts against a collider, sets and reads a TileMap cell, adjusts a camera and an audio bus, holds a gamepad axis, and instantiates and frees a scene at runtime, all against a headless game except checks that require rendering.
+
+**Phase 9: Project-defined tools and session lifecycle.** Surface `conduit_tools` group methods as `gd_project_{method}` tools with `listChanged` notifications (section 8), implement `gd_editor_launch`, `gd_editor_quit`, and `gd_project_scaffold`, list export presets, and add the networking tools behind the eval-class flag.
+*Acceptance:* a method on a node in the `conduit_tools` group appears as a typed tool and calling it invokes the method, with `listChanged` emitted when the node joins and leaves the group; starting from an empty directory, `gd_project_scaffold` plus `gd_editor_launch` produce an editor session that answers `gd_ping`; export presets list correctly.
 
 Throughout, follow the evaluation practice from the MCP builder guidance: after each phase, write a handful of realistic, independent, read-only-verifiable tasks that exercise the new tools end to end, and confirm an agent can complete them.
 
@@ -487,8 +498,15 @@ conduit/
       handlers/
         mod.rs                    # handler registry, routing by tool name
         classdb.rs                # ClassDB introspection, registered by both personalities
+        node_query.rs             # shared class/group/name-pattern tree search
         editor/                   # edit-time handlers (undo-wrapped)
           scene.rs
+          properties.rs           # edited-scene node property get/set
+          wiring.rs               # persisted signal connections and node groups
+          query.rs                # edited-scene node search
+          autoload.rs
+          input_map.rs
+          eval.rs                 # opt-in editor-process evaluation
           script.rs
           resource.rs
           project.rs
@@ -499,6 +517,7 @@ conduit/
         runtime/                  # runtime handlers
           inspect.rs
           mutate.rs
+          query.rs                # runtime node search
           eval.rs                 # deferred-completion await handling
           input.rs
           signals.rs
@@ -605,7 +624,7 @@ Three walkthroughs ground the taxonomy in practice. Tool names are illustrative 
 
 ## 15. Distribution, installation, and configuration
 
-**Packaging.** The Godot side ships as an addon folder, `addons/conduit/`, containing the `.gdextension`, prebuilt libraries per platform and target, and the `.uid` sidecars Godot generates. Releases attach these to tags; once stable, the addon is listed in the Godot Asset Library. The broker ships as an npm package (`conduit-mcp-server`) runnable with `npx`, version-locked to a bridge protocol version; on mismatch, the handshake of section 7.5 says so in plain language. Building from source is `cargo build` in `bridge/` plus the standard package install in `broker/`; contributors need Rust and the target Godot version, nothing else.
+**Packaging.** The Godot side ships as an addon folder, `addons/conduit/`, containing the `.gdextension`, prebuilt libraries per platform and target, and the `.uid` sidecars Godot generates. Releases attach these to tags; once stable, the addon is listed in the Godot Asset Library. The broker is published to the npm registry (`conduit-mcp-server`) so any MCP client can launch it, runnable with `bunx` (or `npx` for consumers without Bun), version-locked to a bridge protocol version; on mismatch, the handshake of section 7.5 says so in plain language. Building from source is `cargo build` in `bridge/` plus `bun install` in `broker/`; development, tests, and the eval runners standardize on Bun exclusively (`bun test`, `bun run`), never npm or node. Contributors need Rust, Bun, and the target Godot version, nothing else.
 
 **Installation.** One-time per project: copy `addons/conduit/` into the project (or install from the asset library) and open the project once so the extension registers. One-time per machine: add the broker to the MCP client's configuration. For a Claude-family client the entry is:
 
@@ -613,14 +632,14 @@ Three walkthroughs ground the taxonomy in practice. Tool names are illustrative 
 {
   "mcpServers": {
     "conduit": {
-      "command": "npx",
-      "args": ["-y", "conduit-mcp-server", "--project", "/absolute/path/to/project"]
+      "command": "bunx",
+      "args": ["conduit-mcp-server", "--project", "/absolute/path/to/project"]
     }
   }
 }
 ```
 
-**Configuration.** The broker reads command-line flags first, then environment variables: `--project` / `CONDUIT_PROJECT` (required); `--godot` / `CONDUIT_GODOT` (engine binary path, needed only for `gd_editor_launch` and `gd_project_scaffold`); `--timeout-ms` and `--eval-timeout-ms` (defaults per section 13); `--enable-pixel-tools` (tier 3, off by default); `--disable-eval` (drops `gd_game_eval` and project-defined tools together for restricted deployments); `--audit-log <path|off>`; and `--tool-groups` (a comma list to slim the tool surface, for example dropping networking and audio). The bridge is configured only through the activation mechanisms of section 6.3 and otherwise has no knobs; keeping configuration broker-side keeps the project clean and the bridge simple.
+**Configuration.** The broker reads command-line flags first, then environment variables: `--project` / `CONDUIT_PROJECT` (required); `--godot` / `CONDUIT_GODOT` (engine binary path, needed only for `gd_editor_launch` and `gd_project_scaffold`); `--timeout-ms` and `--eval-timeout-ms` (defaults per section 13); `--enable-pixel-tools` (tier 3, off by default); `--enable-editor-eval` / `CONDUIT_ENABLE_EDITOR_EVAL` (editor-process evaluation, off by default); `--disable-eval` (drops `gd_game_eval`, `gd_editor_eval`, and project-defined tools together for restricted deployments); `--audit-log <path|off>`; and `--tool-groups` (a comma list to slim the tool surface, for example dropping networking and audio). The bridge is configured only through the activation mechanisms of section 6.3 and otherwise has no knobs; keeping configuration broker-side keeps the project clean and the bridge simple.
 
 **Export presets.** Release presets exclude the `addons/conduit/` library binaries through the preset's resource filters, and the bridge's release-build guard (section 6.3) backstops a preset mistake. Debug and QA presets may include the bridge deliberately, activated only with the explicit opt-in flag, which is how on-device agent-driven testing works without ever arming a release build.
 

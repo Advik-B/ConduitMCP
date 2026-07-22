@@ -62,8 +62,58 @@ export function registerEditorSceneTools(server: McpServer, manager: BridgeManag
       parent_path: z.string().describe("Path to the parent, relative to the edited scene root ('.' for the root itself)."),
       type: z.string().describe("Engine class name to instantiate, for example Sprite2D."),
       name: z.string().describe("Name for the new node; defaults to the class name.").optional(),
+      properties: z
+        .record(z.string(), z.any())
+        .describe("Initial property values applied before the add commits; plain JSON or tagged Godot types.")
+        .optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  );
+
+  editorTool(
+    "gd_scene_instantiate",
+    "Instantiate another scene (.tscn) as a child of a node in the edited scene, undo-wrapped. The instance root is owned by the edited scene so the reference persists on save; its internal nodes stay owned by their own scene.",
+    {
+      scene_path: z.string().describe("res:// path of the scene to instantiate."),
+      parent_path: z.string().describe("Path to the parent, relative to the edited scene root ('.' for the root itself)."),
+      name: z.string().describe("Name for the instance root; defaults to the scene's root name.").optional(),
+    },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  );
+
+  editorTool(
+    "gd_scene_node_get_property",
+    "Read one property of a node in the edited scene, returned as plain JSON or a tagged Godot type. The edit-time counterpart of gd_node_get_property.",
+    {
+      node_path: z.string().describe("Path to the node, relative to the edited scene root ('.' for the root itself)."),
+      property: z.string().describe("Property name to read."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  );
+
+  editorTool(
+    "gd_scene_node_set_property",
+    "Set one property of a node in the edited scene, undo-wrapped, returning the previous value. Values may be plain JSON or tagged Godot types, including {__type: 'Resource', path: 'res://...'} for resource-valued properties like textures and shapes.",
+    {
+      node_path: z.string().describe("Path to the node, relative to the edited scene root ('.' for the root itself)."),
+      property: z.string().describe("Property name to write."),
+      value: z.any().describe("New value; plain JSON or a tagged Godot type."),
+    },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  );
+
+  editorTool(
+    "gd_scene_find_nodes",
+    "Find nodes in the edited scene by engine class, group membership, or name glob (* and ?). At least one filter is required; results paginate via limit/offset and report scene-relative paths.",
+    {
+      class: z.string().describe("Match nodes of this engine class (inheritance-aware).").optional(),
+      group: z.string().describe("Match nodes in this group.").optional(),
+      name_pattern: z.string().describe("Match node names against this glob, for example Enemy*.").optional(),
+      root_path: z.string().describe("Subtree to search, relative to the edited scene root; defaults to the whole scene.").optional(),
+      limit: z.number().int().min(1).describe("Page size (default 50).").optional(),
+      offset: z.number().int().min(0).describe("Start offset from a previous next_offset.").optional(),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   );
 
   editorTool(

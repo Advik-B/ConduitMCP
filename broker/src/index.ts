@@ -15,9 +15,11 @@ import { z } from "zod";
 import { BridgeManager } from "./bridge-manager.ts";
 import { type Endpoint, editorEndpoint, editorEndpointFromOverride, endpointKey } from "./endpoint.ts";
 import { EventRing } from "./events.ts";
+import { registerClassDbTools } from "./tools/classdb.ts";
 import { registerEditorAssetsTools } from "./tools/editor-assets.ts";
 import { registerEditorCollabTools } from "./tools/editor-collab.ts";
 import { registerEditorDebugTools } from "./tools/editor-debug.ts";
+import { registerEditorEvalTools } from "./tools/editor-eval.ts";
 import { registerEditorExportTools } from "./tools/editor-export.ts";
 import { registerEditorFilesTools } from "./tools/editor-files.ts";
 import { registerEditorPixelTools } from "./tools/editor-pixel.ts";
@@ -26,6 +28,7 @@ import { registerEditorResourceTools } from "./tools/editor-resource.ts";
 import { registerEditorSceneTools } from "./tools/editor-scene.ts";
 import { registerEditorScriptTools } from "./tools/editor-script.ts";
 import { registerEditorStateTools } from "./tools/editor-state.ts";
+import { registerEditorWiringTools } from "./tools/editor-wiring.ts";
 import {
   AWAIT_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
@@ -47,6 +50,7 @@ interface Config {
   projectPath: string | null;
   editorEndpoint: Endpoint;
   enablePixelTools: boolean;
+  enableEditorEval: boolean;
 }
 
 /** Whether a boolean CLI flag is present in the process arguments. */
@@ -68,12 +72,14 @@ function resolveConfig(): Config {
   }
   // CLI flags take precedence over environment variables (whitepaper section 15).
   const enablePixelTools = hasCliFlag("--enable-pixel-tools") || !!process.env.CONDUIT_ENABLE_PIXEL_TOOLS;
-  return { runtimeDir, projectPath, editorEndpoint: resolvedEndpoint, enablePixelTools };
+  const enableEditorEval = hasCliFlag("--enable-editor-eval") || !!process.env.CONDUIT_ENABLE_EDITOR_EVAL;
+  return { runtimeDir, projectPath, editorEndpoint: resolvedEndpoint, enablePixelTools, enableEditorEval };
 }
 
 /** Tool-surface options resolved from configuration. */
 export interface ToolOptions {
   enablePixelTools: boolean;
+  enableEditorEval: boolean;
 }
 
 export function registerTools(server: McpServer, manager: BridgeManager, events: EventRing, options: ToolOptions): void {
@@ -124,6 +130,20 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     "Stop the running game. The broker reports a game_exited event when the game process quits.",
     {},
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  );
+
+  gameTool(
+    "gd_find_nodes",
+    "Find nodes in the running scene tree by engine class, group membership, or name glob (* and ?). At least one filter is required; results paginate via limit/offset and report absolute paths.",
+    {
+      class: z.string().describe("Match nodes of this engine class (inheritance-aware).").optional(),
+      group: z.string().describe("Match nodes in this group.").optional(),
+      name_pattern: z.string().describe("Match node names against this glob, for example Enemy*.").optional(),
+      root_path: z.string().describe("Absolute node path to search under; defaults to the tree root.").optional(),
+      limit: z.number().int().min(1).describe("Page size (default 50).").optional(),
+      offset: z.number().int().min(0).describe("Start offset from a previous next_offset.").optional(),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   );
 
   gameTool(
@@ -332,7 +352,9 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     async ({ cursor }) => textResult(events.since(cursor ?? 0)),
   );
 
+  registerClassDbTools(server, manager);
   registerEditorSceneTools(server, manager);
+  registerEditorWiringTools(server, manager);
   registerEditorScriptTools(server, manager);
   registerEditorResourceTools(server, manager);
   registerEditorProjectTools(server, manager);
@@ -347,6 +369,12 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   // so the default tool surface never exposes it.
   if (options.enablePixelTools) {
     registerEditorPixelTools(server, manager);
+  }
+
+  // Editor-process evaluation: opt-in for the same reason (section 9); it runs
+  // arbitrary code with the editor's authority over the project.
+  if (options.enableEditorEval) {
+    registerEditorEvalTools(server, manager);
   }
 }
 
@@ -374,9 +402,15 @@ async function main(): Promise<void> {
   const hello = await manager.connectEditor();
   log(`connected to editor bridge (engine ${hello.engine_version})`);
 
-  registerTools(server, manager, events, { enablePixelTools: config.enablePixelTools });
+  registerTools(server, manager, events, {
+    enablePixelTools: config.enablePixelTools,
+    enableEditorEval: config.enableEditorEval,
+  });
   if (config.enablePixelTools) {
     log("pixel tools enabled (tier-3 editor fallback)");
+  }
+  if (config.enableEditorEval) {
+    log("editor eval enabled (gd_editor_eval)");
   }
 
   const transport = new StdioServerTransport();

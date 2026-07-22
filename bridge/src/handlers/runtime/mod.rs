@@ -8,5 +8,6 @@ pub mod inspect;
 pub mod lifecycle;
 pub mod mutate;
 pub mod observe;
+pub mod query;
 pub mod signals;
 pub mod support;

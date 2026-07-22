@@ -130,7 +130,9 @@ impl PendingOp for EvalPending {
 
 /// Wrap a snippet in a driver script. The driver awaits the snippet only when it
 /// contains `await`, so a plain expression never awaits a non-coroutine, and
-/// emits the result through `_conduit_done`.
+/// emits the result through `_conduit_done`. The `@tool` annotation lets the
+/// same driver instantiate inside the editor process for gd_editor_eval; it is
+/// inert in a running game.
 fn wrap_source(source: &str) -> GString {
     let body = if source.contains("return") {
         source.to_string()
@@ -144,7 +146,7 @@ fn wrap_source(source: &str) -> GString {
         "\tvar __r = _conduit_eval()\n\t_conduit_done.emit(__r)\n"
     };
     let script = format!(
-        "extends Node\nsignal _conduit_done(value)\nfunc _conduit_run():\n{run}func _conduit_eval():\n{indented}"
+        "@tool\nextends Node\nsignal _conduit_done(value)\nfunc _conduit_run():\n{run}func _conduit_eval():\n{indented}"
     );
     GString::from(script.as_str())
 }

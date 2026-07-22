@@ -9,7 +9,8 @@
 //! it survives if "do" history is discarded before ever being undone, and undo
 //! by removing it.
 
-use godot::classes::{ClassDb, EditorInterface, Node, PackedScene, ResourceSaver};
+use godot::classes::packed_scene::GenEditState;
+use godot::classes::{ClassDb, EditorInterface, Node, PackedScene, ResourceLoader, ResourceSaver};
 use godot::global::Error as GdError;
 use godot::prelude::*;
 use serde_json::{json, Value};
@@ -192,11 +193,29 @@ pub fn node_add(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
         let parent_path = require_str(args, "parent_path")?;
         let type_name = require_str(args, "type")?;
         let name = optional_str(args, "name");
+        let properties = match args.get("properties") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(map)) => Some(map),
+            Some(_) => return Err(BridgeError::InvalidArgs("'properties' must be an object".into())),
+        };
 
         let parent = resolve_editor_node(&parent_path)?;
         let mut new_node = instantiate_node(&type_name)?;
         if let Some(name) = &name {
             new_node.set_name(name.as_str());
+        }
+
+        // Initial values are applied before the undo-wrapped add commits, so a
+        // single undo removes the whole node and no per-property undo entries
+        // are needed. The instance is freed on failure because it is not yet in
+        // the tree and would otherwise leak.
+        if let Some(map) = properties {
+            for (key, value) in map {
+                if let Err(err) = apply_initial_property(&mut new_node, &type_name, key, value) {
+                    new_node.free();
+                    return Err(err);
+                }
+            }
         }
 
         let root = edited_scene_root()?;
@@ -220,6 +239,77 @@ pub fn node_add(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
             "action_name": action_name,
         }))
     })())
+}
+
+/// Instantiate another scene as a child of a node in the edited scene
+/// (whitepaper section 8 "Scene structure"). The owner is set on the instance
+/// root only: owning the instance's internal children would serialize them as
+/// local nodes and corrupt the instance, so `queue_owner_recursive` is
+/// deliberately not used (Godot's SceneTreeDock instantiates the same way).
+pub fn scene_instantiate(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
+    HandlerOutcome::Done((|| {
+        let scene_path = require_str(args, "scene_path")?;
+        let parent_path = require_str(args, "parent_path")?;
+        let name = optional_str(args, "name");
+        validate_project_path(&scene_path)?;
+
+        let parent = resolve_editor_node(&parent_path)?;
+        let root = edited_scene_root()?;
+        if root.get_scene_file_path().to_string() == scene_path {
+            return Err(BridgeError::InvalidArgs(format!("cannot instantiate '{scene_path}' inside itself")));
+        }
+
+        let packed = ResourceLoader::singleton()
+            .load(scene_path.as_str())
+            .and_then(|res| res.try_cast::<PackedScene>().ok())
+            .ok_or_else(|| BridgeError::ResourceError(format!("'{scene_path}' is not a loadable PackedScene")))?;
+        let mut instance = packed
+            .instantiate_ex()
+            .edit_state(GenEditState::INSTANCE)
+            .done()
+            .ok_or_else(|| BridgeError::ResourceError(format!("failed to instantiate '{scene_path}'")))?;
+        if let Some(name) = &name {
+            instance.set_name(name.as_str());
+        }
+
+        let mut ur = undo_redo()?;
+        let action_name = format!("Conduit: Instantiate {scene_path}");
+        ur.create_action(action_name.as_str());
+        ur.try_add_do_method(&parent, "add_child", &[instance.to_variant()])
+            .map_err(|e| call_error("add_do_method(add_child)", e))?;
+        ur.try_add_do_method(&instance, "set_owner", &[root.to_variant()])
+            .map_err(|e| call_error("add_do_method(set_owner)", e))?;
+        ur.add_do_reference(&instance);
+        ur.try_add_undo_method(&parent, "remove_child", &[instance.to_variant()])
+            .map_err(|e| call_error("add_undo_method(remove_child)", e))?;
+        ur.commit_action();
+
+        Ok(json!({
+            "node_path": relative_path(&root, &instance),
+            "name": instance.get_name().to_string(),
+            "scene_path": scene_path,
+            "action_name": action_name,
+        }))
+    })())
+}
+
+fn apply_initial_property(
+    node: &mut Gd<Node>,
+    type_name: &str,
+    key: &str,
+    value: &Value,
+) -> Result<(), BridgeError> {
+    let previous = node.get(key);
+    if previous.is_nil() && !crate::handlers::runtime::support::property_exists(node, key) {
+        return Err(BridgeError::InvalidProperty(format!("'{type_name}' has no property '{key}'")));
+    }
+    let variant = if previous.get_type() == godot::builtin::VariantType::NIL {
+        crate::variant_json::json_to_variant(value)?
+    } else {
+        crate::variant_json::json_to_variant_typed(value, previous.get_type())?
+    };
+    node.set(key, &variant);
+    Ok(())
 }
 
 pub fn node_remove(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
@@ -382,8 +472,26 @@ mod tests {
     }
 
     #[test]
+    fn node_add_rejects_a_non_object_properties_argument() {
+        assert_invalid_args(node_add(
+            &json!({ "parent_path": ".", "type": "Node2D", "properties": [1, 2] }),
+            &ctx(),
+        ));
+    }
+
+    #[test]
     fn node_remove_requires_node_path() {
         assert_invalid_args(node_remove(&json!({}), &ctx()));
+    }
+
+    #[test]
+    fn scene_instantiate_requires_scene_path_and_parent_path() {
+        assert_invalid_args(scene_instantiate(&json!({}), &ctx()));
+        assert_invalid_args(scene_instantiate(&json!({ "scene_path": "res://a.tscn" }), &ctx()));
+        assert_invalid_args(scene_instantiate(
+            &json!({ "scene_path": "../outside.tscn", "parent_path": "." }),
+            &ctx(),
+        ));
     }
 
     #[test]

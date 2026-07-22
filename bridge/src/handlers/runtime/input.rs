@@ -107,7 +107,8 @@ fn resolve_key(args: &Value) -> Result<Key, BridgeError> {
 
 /// Letters and digits map to their ASCII code, which equals the Godot keycode
 /// (KEY_A == 65). Named keys cover the common movement and editing set.
-fn key_from_name(name: &str) -> Option<Key> {
+/// Shared with the editor's input-map handler so both accept the same names.
+pub(crate) fn key_from_name(name: &str) -> Option<Key> {
     let trimmed = name.trim();
     if let Some(single) = single_alnum(trimmed) {
         return Key::try_from_ord(single.to_ascii_uppercase() as i32);

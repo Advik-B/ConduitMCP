@@ -4,13 +4,13 @@ Native in-process MCP bridge for full agentic control of the Godot engine. A Rus
 
 ## Source of truth
 
-The complete design is in `docs/conduit-whitepaper.md` (v0.2). Read it before writing code. Appendix D contains working instructions addressed to you specifically; follow them. When this document and your prior knowledge of Godot or gdext disagree, the document wins, then verify the specific API against https://godot-rust.github.io/docs/gdext/master/godot/ because both Godot and gdext change between releases.
+The complete design is in `docs/conduit-whitepaper.md` (v0.3). Read it before writing code. Appendix D contains working instructions addressed to you specifically; follow them. When this document and your prior knowledge of Godot or gdext disagree, the document wins, then verify the specific API against https://godot-rust.github.io/docs/gdext/master/godot/ because both Godot and gdext change between releases.
 
-Target: Godot 4.4+, gdext (godot crate), Node 20+ for the broker.
+Target: Godot 4.4+, gdext (godot crate), Bun 1.x for the broker.
 
 ## Phase discipline
 
-The roadmap (whitepaper section 10) has six phases, each with an acceptance criterion. Work on exactly one phase per session unless told otherwise. A phase is done when its acceptance criterion passes as an automated or scripted check, not when the code compiles. Do not begin phase N+1 in the same session that finished phase N; stop and report instead.
+The roadmap (whitepaper section 10) has nine phases, each with an acceptance criterion. Work on exactly one phase per session unless told otherwise. A phase is done when its acceptance criterion passes as an automated or scripted check, not when the code compiles. Do not begin phase N+1 in the same session that finished phase N; stop and report instead.
 
 Phase 1 is small but load-bearing: the threading proof (bounded queue, main-thread drain, deferred completion for await) must be demonstrated with the stress test before anything else is built on it.
 
@@ -26,7 +26,7 @@ Follow whitepaper section 11 exactly (`bridge/` Rust cdylib, `broker/` TypeScrip
 ## Build and test
 
 - Bridge: `cargo build` in `bridge/`, `cargo test` for unit tests, `cargo clippy -- -D warnings` before declaring work done.
-- Broker: `npm ci` and `npm test` in `broker/`.
+- Broker and everything TypeScript: Bun, exclusively. Never invoke npm, npx, or node in this repo. Install with `bun install --frozen-lockfile` at the repo root, run broker unit tests with `bun test` in `broker/`, run the root package.json scripts with `bun run` (`bun run phase7`, `bun run typecheck`), and use `bunx` for one-off binaries. Do not add npm lockfiles or npm-only scripts; `bun.lock` is the only lockfile.
 - Integration tests launch Godot headless against `example-project/`; the Godot binary path comes from `GODOT_BIN`. If it is unset, ask rather than guessing.
 - Cross-platform: the project builds and its acceptance runners pass on Windows, macOS, and Linux. The broker-to-bridge transport is per-OS (Unix socket, Windows named pipe, opt-in loopback TCP) and the eval runners go through `tests/evals/harness.ts` for all host-specific behaviour (display, process cleanup, endpoint discovery). Display tooling (Xvfb) is Linux-only; Windows and macOS render natively. Platform specifics are in `docs/api-gaps.md`.
 

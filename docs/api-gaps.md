@@ -365,3 +365,61 @@ for `get_open_scenes` in `scene.rs`. The workaround, where a specific scene must
 be the current one under headless, is to pass the scene path as a startup
 argument to the editor (`godot --editor --path <proj> res://scene.tscn`) rather
 than switching after launch; the phase-6 eval does this.
+
+## Phase 7: edit-time parity core
+
+### The eval driver script must be @tool for the editor process
+
+`gd_editor_eval` reuses the runtime eval machinery (`runtime/eval.rs::run_source`):
+the editor's MainLoop is a `SceneTree`, and the `PendingOp` deferred-completion
+path runs in the editor's dispatcher identically. The one required change was
+prepending `@tool` to the generated driver script; without it the script does
+not instantiate in the editor process (`set_script` produces no instance and
+`has_method("_conduit_run")` fails). `@tool` is inert in a running game, and the
+phase-2 eval passes unchanged with it, so the same wrapper serves both bridges.
+Verified live: an awaiting snippet (`await ...process_frame`) settles in the
+editor process through the same deferred-completion path.
+
+### The editor's live InputMap is deliberately not reloaded
+
+`gd_input_map` mutates `input/{action}` project settings and saves. It does not
+call `InputMap.load_from_project_settings()` in the editor process: the editor's
+live InputMap holds editor bindings, and reloading project actions into it would
+clobber them. Games load the map at startup, so persistence is the correct
+semantics; the tool description says so. The same applies to `gd_autoload`: the
+running editor does not instantiate a newly added singleton, and the tool
+documents that it takes effect in subsequently launched games.
+
+### ProjectSettings enumerates autoload/* and input/* including overridden built-ins
+
+`ProjectSettings::get_property_list()` includes `autoload/{name}` entries and
+`input/{action}` entries for project-defined values (verified live against
+4.7.1). Built-in `ui_*` actions that the project has not overridden do not
+appear there, so `gd_input_map list` reports project-defined and overridden
+actions only.
+
+### gd_classdb routing
+
+The `gd_classdb` handler is registered in both bridge personalities, but the
+broker registers the single MCP tool routed to its editor connection, which is
+always present (the broker refuses to start without it) and holds identical
+reflection data. A future game-only broker mode would re-route it to the game
+bridge. The game-side registration is exercised by the phase-7 eval over the
+raw bridge protocol.
+
+### The named-pipe listener serves one broker at a time (Windows)
+
+A consequence of the two-thread blocking serve (see the transport note above):
+while one broker holds the editor pipe, a second broker's connect is refused.
+The phase-7 eval therefore closes its default broker before connecting the
+`--enable-editor-eval` broker. The listener accepts a new connection as soon as
+the previous client disconnects, matching the reconnect guarantee of whitepaper
+section 7.5.
+
+### gd_play from a headless editor remains unproven
+
+Phase 7's game-side checks (`gd_find_nodes`, `gd_classdb` on the game bridge)
+use the phase-4 pattern: a bare `godot --headless` game with the `CONDUIT_ENABLE`
+opt-in, driven over the raw bridge protocol. `gd_play` from a `--headless`
+editor spawns a child that expects a display, and the broker only adopts game
+bridges it launched through `gd_play`, so the split acceptance avoids both.

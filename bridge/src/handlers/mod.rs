@@ -15,7 +15,9 @@ use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
 use crate::protocol::BridgeError;
 
 pub mod args;
+pub mod classdb;
 pub mod editor;
+pub mod node_query;
 pub mod runtime;
 
 type HandlerFn = fn(&Value, &FrameContext) -> HandlerOutcome;
@@ -53,6 +55,15 @@ impl HandlerRegistry {
         handlers.insert("gd_node_reparent", editor::scene::node_reparent);
         handlers.insert("gd_node_rename", editor::scene::node_rename);
         handlers.insert("gd_node_duplicate", editor::scene::node_duplicate);
+        handlers.insert("gd_scene_node_get_property", editor::properties::get_property);
+        handlers.insert("gd_scene_node_set_property", editor::properties::set_property);
+        handlers.insert("gd_scene_instantiate", editor::scene::scene_instantiate);
+        handlers.insert("gd_scene_signal", editor::wiring::scene_signal);
+        handlers.insert("gd_node_group", editor::wiring::node_group);
+        handlers.insert("gd_scene_find_nodes", editor::query::scene_find_nodes);
+        handlers.insert("gd_autoload", editor::autoload::autoload);
+        handlers.insert("gd_input_map", editor::input_map::input_map);
+        handlers.insert("gd_editor_eval", editor::eval::editor_eval);
         handlers.insert("gd_script_create", editor::script::create);
         handlers.insert("gd_script_attach", editor::script::attach);
         handlers.insert("gd_script_detach", editor::script::detach);
@@ -82,6 +93,7 @@ impl HandlerRegistry {
         handlers.insert("gd_file_move", editor::files::move_file);
         handlers.insert("gd_file_delete", editor::files::delete);
         handlers.insert("gd_export_project", editor::import_export::export_project);
+        handlers.insert("gd_classdb", classdb::classdb);
         HandlerRegistry { handlers }
     }
 
@@ -107,6 +119,8 @@ impl HandlerRegistry {
         handlers.insert("gd_step_frames", runtime::lifecycle::step_frames);
         handlers.insert("gd_wait_time", runtime::lifecycle::wait_time);
         handlers.insert("gd_set_time_scale", runtime::lifecycle::set_time_scale);
+        handlers.insert("gd_find_nodes", runtime::query::find_nodes);
+        handlers.insert("gd_classdb", classdb::classdb);
         HandlerRegistry { handlers }
     }
 
@@ -201,6 +215,12 @@ mod tests {
     fn editor_registry_includes_debugger_tool() {
         let names = HandlerRegistry::editor().tool_names();
         assert!(names.contains(&"gd_debug"), "gd_debug must be registered on the editor bridge");
+    }
+
+    #[test]
+    fn classdb_registers_in_both_personalities() {
+        assert!(HandlerRegistry::editor().tool_names().contains(&"gd_classdb"));
+        assert!(HandlerRegistry::game().tool_names().contains(&"gd_classdb"));
     }
 
     #[test]

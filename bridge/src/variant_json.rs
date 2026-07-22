@@ -13,12 +13,14 @@
 //! error-message logic and are unit-tested here without Godot.
 
 use godot::builtin::{
-    Color, GString, PackedByteArray, PackedColorArray, PackedFloat32Array, PackedFloat64Array,
-    PackedInt32Array, PackedInt64Array, PackedStringArray, PackedVector2Array, PackedVector3Array,
-    Quaternion, Rect2, Rect2i, Vector2, Vector2i, Vector3, Vector3i, Vector4, Vector4i,
+    Color, GString, NodePath, PackedByteArray, PackedColorArray, PackedFloat32Array,
+    PackedFloat64Array, PackedInt32Array, PackedInt64Array, PackedStringArray, PackedVector2Array,
+    PackedVector3Array, Quaternion, Rect2, Rect2i, StringName, Vector2, Vector2i, Vector3,
+    Vector3i, Vector4, Vector4i,
 };
 use godot::builtin::{Array as GArray, Dictionary, Variant, VariantType};
 use godot::meta::ToGodot;
+use godot::obj::{Gd, Singleton};
 use serde_json::{json, Map, Value};
 
 use crate::protocol::BridgeError;
@@ -132,6 +134,14 @@ pub fn json_to_variant_typed(value: &Value, expected: VariantType) -> Result<Var
             .as_bool()
             .map(|b| b.to_variant())
             .ok_or_else(|| invalid("expected a boolean property value")),
+        VariantType::STRING_NAME => value
+            .as_str()
+            .map(|s| StringName::from(s).to_variant())
+            .ok_or_else(|| invalid("expected a string for a StringName property")),
+        VariantType::NODE_PATH => value
+            .as_str()
+            .map(|s| NodePath::from(s).to_variant())
+            .ok_or_else(|| invalid("expected a string for a NodePath property")),
         _ => json_to_variant(value),
     }
 }
@@ -280,10 +290,32 @@ fn tagged_to_variant(tag: &str, obj: &Map<String, Value>) -> Result<Variant, Bri
             }
             Ok(packed.to_variant())
         }
+        "Resource" => {
+            let path = field(obj, tag, "path")?
+                .as_str()
+                .ok_or_else(|| invalid("Resource.path must be a string"))?;
+            validate_resource_path(path)?;
+            godot::classes::ResourceLoader::singleton()
+                .load(path)
+                .map(|resource| resource.to_variant())
+                .ok_or_else(|| BridgeError::ResourceError(format!("failed to load resource '{path}'")))
+        }
         other => Err(invalid(format!(
             "unsupported __type '{other}'; matrix and transform types are not yet tagged (see docs/api-gaps.md)"
         ))),
     }
+}
+
+/// Confine a tagged Resource path to the project or user directory
+/// (whitepaper section 9). Sub-resource paths (`res://a.tscn::Sub_1`) pass.
+fn validate_resource_path(path: &str) -> Result<(), BridgeError> {
+    if !path.starts_with("res://") && !path.starts_with("user://") {
+        return Err(invalid(format!("Resource path '{path}' must start with res:// or user://")));
+    }
+    if path.split('/').any(|segment| segment == "..") {
+        return Err(invalid(format!("Resource path '{path}' must not contain '..' segments")));
+    }
+    Ok(())
 }
 
 /// Convert a Variant into JSON, tagging the richer types (section 7.3).
@@ -377,8 +409,22 @@ pub fn variant_to_json(variant: &Variant) -> Value {
                     .collect(),
             )
         }
-        // Matrix, transform, and engine-object types have no tagged form yet;
-        // stringify rather than drop the value (recorded in docs/api-gaps.md).
+        // A resource-valued object encodes as its class and loadable path
+        // (section 7.3); a pathless (unsaved) resource or non-resource object
+        // falls back to stringification.
+        VariantType::OBJECT => match variant.try_to::<Gd<godot::classes::Resource>>() {
+            Ok(resource) => {
+                let path = resource.get_path().to_string();
+                if path.is_empty() {
+                    json!(variant.to_string())
+                } else {
+                    json!({ TYPE_KEY: "Resource", "class": resource.get_class().to_string(), "path": path })
+                }
+            }
+            Err(_) => json!(variant.to_string()),
+        },
+        // Matrix and transform types have no tagged form yet; stringify rather
+        // than drop the value (recorded in docs/api-gaps.md).
         _ => json!(variant.to_string()),
     }
 }
@@ -429,5 +475,15 @@ mod tests {
         let map = obj.as_object().unwrap();
         assert_eq!(field_array(map, "PackedInt32Array", "data").unwrap().len(), 3);
         assert!(field_array(map, "PackedInt32Array", "bad").is_err());
+    }
+
+    #[test]
+    fn validate_resource_path_confines_to_the_project() {
+        assert!(validate_resource_path("res://textures/wood.png").is_ok());
+        assert!(validate_resource_path("res://main.tscn::Texture_a1").is_ok());
+        assert!(validate_resource_path("user://cache.res").is_ok());
+        assert_eq!(validate_resource_path("/etc/passwd").unwrap_err().code(), "invalid_args");
+        assert_eq!(validate_resource_path("res://../outside.tres").unwrap_err().code(), "invalid_args");
+        assert_eq!(validate_resource_path("C:/Windows/system.ini").unwrap_err().code(), "invalid_args");
     }
 }
