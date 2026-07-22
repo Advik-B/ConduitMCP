@@ -32,6 +32,7 @@ use interprocess::local_socket::{GenericFilePath, ToFsName};
 use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, Stream};
 
 use crate::protocol::{write_frame, BridgeError, Command, FrameDecoder, Response};
+use crate::transport::status::LinkStatus;
 
 /// The facts that decide whether the command listener may bind. Kept as plain
 /// booleans so the decision is pure and fully testable; the plugin fills them
@@ -259,6 +260,7 @@ impl Listener {
         inbound_tx: Sender<Command>,
         outbound_rx: Receiver<Response>,
         event_rx: Receiver<Vec<u8>>,
+        status: LinkStatus,
     ) -> std::io::Result<Listener> {
         let display = endpoint.display;
         let stop = Arc::new(AtomicBool::new(false));
@@ -277,8 +279,9 @@ impl Listener {
                     .name(name)
                     .nonblocking(ListenerNonblockingMode::Accept)
                     .create_sync()?;
+                status.mark_listening();
                 let handle = thread::Builder::new().name("conduit-ipc".to_string()).spawn(move || {
-                    accept_loop_local(listener, hello_payload, inbound_tx, outbound_rx, event_rx, thread_stop)
+                    accept_loop_local(listener, hello_payload, inbound_tx, outbound_rx, event_rx, thread_stop, status)
                 })?;
                 Ok(Listener { display, cleanup: Some(path), wake: Wake::None, stop, handle: Some(handle) })
             }
@@ -291,16 +294,18 @@ impl Listener {
                     .name(name)
                     .nonblocking(ListenerNonblockingMode::Neither)
                     .create_sync()?;
+                status.mark_listening();
                 let handle = thread::Builder::new().name("conduit-ipc".to_string()).spawn(move || {
-                    accept_loop_pipe(listener, hello_payload, inbound_tx, outbound_rx, event_rx, thread_stop)
+                    accept_loop_pipe(listener, hello_payload, inbound_tx, outbound_rx, event_rx, thread_stop, status)
                 })?;
                 Ok(Listener { display, cleanup: None, wake: Wake::Namespaced(token), stop, handle: Some(handle) })
             }
             EndpointKind::Tcp(addr) => {
                 let listener = TcpListener::bind(addr)?;
                 listener.set_nonblocking(true)?;
+                status.mark_listening();
                 let handle = thread::Builder::new().name("conduit-ipc".to_string()).spawn(move || {
-                    accept_loop_tcp(listener, hello_payload, inbound_tx, outbound_rx, event_rx, thread_stop)
+                    accept_loop_tcp(listener, hello_payload, inbound_tx, outbound_rx, event_rx, thread_stop, status)
                 })?;
                 Ok(Listener { display, cleanup: None, wake: Wake::None, stop, handle: Some(handle) })
             }
@@ -376,10 +381,16 @@ fn accept_loop_local(
     outbound_rx: Receiver<Response>,
     event_rx: Receiver<Vec<u8>>,
     stop: Arc<AtomicBool>,
+    status: LinkStatus,
 ) {
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
-            Ok(stream) => serve_nonblocking(stream, &hello_payload, &inbound_tx, &outbound_rx, &event_rx, &stop),
+            Ok(stream) => {
+                serve_nonblocking(stream, &hello_payload, &inbound_tx, &outbound_rx, &event_rx, &stop, &status);
+                // Every serve exit path funnels here, so one mark covers all
+                // disconnect causes (peer close, read error, framing error).
+                status.mark_listening();
+            }
             Err(err) if err.kind() == ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(1)),
             Err(err) => {
                 eprintln!("conduit: accept error: {err}");
@@ -397,10 +408,14 @@ fn accept_loop_tcp(
     outbound_rx: Receiver<Response>,
     event_rx: Receiver<Vec<u8>>,
     stop: Arc<AtomicBool>,
+    status: LinkStatus,
 ) {
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
-            Ok((stream, _addr)) => serve_nonblocking(stream, &hello_payload, &inbound_tx, &outbound_rx, &event_rx, &stop),
+            Ok((stream, _addr)) => {
+                serve_nonblocking(stream, &hello_payload, &inbound_tx, &outbound_rx, &event_rx, &stop, &status);
+                status.mark_listening();
+            }
             Err(err) if err.kind() == ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(1)),
             Err(err) => {
                 eprintln!("conduit: accept error: {err}");
@@ -420,6 +435,7 @@ fn accept_loop_pipe(
     outbound_rx: Receiver<Response>,
     event_rx: Receiver<Vec<u8>>,
     stop: Arc<AtomicBool>,
+    status: LinkStatus,
 ) {
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
@@ -427,7 +443,10 @@ fn accept_loop_pipe(
                 if stop.load(Ordering::SeqCst) {
                     break; // woken by the stop self-connection
                 }
-                serve_split(stream, &hello_payload, &inbound_tx, &outbound_rx, &event_rx, &stop);
+                serve_split(stream, &hello_payload, &inbound_tx, &outbound_rx, &event_rx, &stop, &status);
+                // The split writer lingers briefly to flush after reader EOF, so
+                // Connected can outlive the peer by a beat; benign for a UI dot.
+                status.mark_listening();
             }
             Err(err) => {
                 if !stop.load(Ordering::SeqCst) {
@@ -448,6 +467,7 @@ fn serve_nonblocking<S: NbStream>(
     outbound_rx: &Receiver<Response>,
     event_rx: &Receiver<Vec<u8>>,
     stop: &Arc<AtomicBool>,
+    status: &LinkStatus,
 ) {
     if let Err(err) = stream.set_nb(true) {
         eprintln!("conduit: could not set stream non-blocking: {err}");
@@ -458,6 +478,7 @@ fn serve_nonblocking<S: NbStream>(
     if write_framed_bytes(&mut stream, hello_payload, stop).is_err() {
         return;
     }
+    status.mark_connected();
     // Drop any responses or events left over from a prior connection so stale ids
     // cannot leak onto a freshly connected broker and a stale event cannot wedge
     // its state; the broker resyncs on connect (whitepaper section 7.5).
@@ -538,6 +559,7 @@ fn serve_split(
     outbound_rx: &Receiver<Response>,
     event_rx: &Receiver<Vec<u8>>,
     stop: &Arc<AtomicBool>,
+    status: &LinkStatus,
 ) {
     let (mut recv, mut send) = stream.split();
 
@@ -547,6 +569,7 @@ fn serve_split(
     if write_frame(&mut send, hello_payload).is_err() {
         return;
     }
+    status.mark_connected();
 
     let reader_done = Arc::new(AtomicBool::new(false));
     let (local_tx, local_rx) = crossbeam_channel::unbounded::<Response>();

@@ -13,6 +13,7 @@ use crossbeam_channel::{Receiver, Sender};
 use serde_json::Value;
 
 use crate::handlers::HandlerRegistry;
+use crate::history::ToolHistory;
 use crate::protocol::{BridgeError, Command, Response};
 
 /// Per-frame execution limits. Draining stops after `max_commands` commands or
@@ -73,6 +74,7 @@ pub struct Dispatcher {
     suspended_ids: HashSet<u64>,
     frame_index: u64,
     metrics: DispatchMetrics,
+    history: ToolHistory,
 }
 
 struct PendingEntry {
@@ -89,11 +91,16 @@ impl Dispatcher {
             suspended_ids: HashSet::new(),
             frame_index: 0,
             metrics: DispatchMetrics::default(),
+            history: ToolHistory::default(),
         }
     }
 
     pub fn metrics(&self) -> DispatchMetrics {
         self.metrics
+    }
+
+    pub fn history(&self) -> &ToolHistory {
+        &self.history
     }
 
     pub fn pending_count(&self) -> usize {
@@ -181,6 +188,7 @@ impl Dispatcher {
 
     fn execute(&mut self, ctx: &FrameContext, command: Command, outbound: &Sender<Response>) {
         let Command { id, tool, args } = command;
+        self.history.begin(id, &tool);
         // Contain a handler panic so a single bad tool call degrades to one
         // error response rather than unwinding through the engine's frame call.
         let outcome = catch_unwind(AssertUnwindSafe(|| self.handlers.dispatch(&tool, &args, ctx)));
@@ -199,6 +207,9 @@ impl Dispatcher {
     }
 
     fn emit(&mut self, outbound: &Sender<Response>, response: Response) {
+        // Settle the history entry first so a call is recorded even when the
+        // IO thread is already gone. Every response path funnels through here.
+        self.history.finish(&response);
         // Outbound is unbounded; a send failure means the IO thread is gone,
         // in which case there is nothing to deliver to and dropping is correct.
         if outbound.send(response).is_ok() {
@@ -297,5 +308,42 @@ mod tests {
         let resp = out_rx.recv().unwrap();
         assert!(!resp.ok);
         assert_eq!(resp.error.unwrap().code, "invalid_args");
+    }
+
+    #[test]
+    fn history_records_completed_ok_call() {
+        let (mut d, in_tx, in_rx, out_tx, _out_rx) = setup();
+        in_tx.send(Command { id: 10, tool: "gd_ping".into(), args: json!({}) }).unwrap();
+        d.run_frame(&in_rx, &out_tx, 16.0);
+        assert_eq!(d.history().len(), 1);
+        let record = d.history().records_since(0).next().unwrap();
+        assert_eq!(record.tool, "gd_ping");
+        assert!(record.error_code.is_none());
+    }
+
+    #[test]
+    fn history_records_error_code_for_unknown_tool() {
+        let (mut d, in_tx, in_rx, out_tx, _out_rx) = setup();
+        in_tx.send(Command { id: 11, tool: "gd_nope".into(), args: json!({}) }).unwrap();
+        d.run_frame(&in_rx, &out_tx, 16.0);
+        let record = d.history().records_since(0).next().unwrap();
+        assert_eq!(record.tool, "gd_nope");
+        assert_eq!(record.error_code.as_deref(), Some("unknown_tool"));
+    }
+
+    #[test]
+    fn history_tracks_deferred_op_in_flight_until_settled() {
+        let (mut d, in_tx, in_rx, out_tx, out_rx) = setup();
+        in_tx.send(Command { id: 12, tool: "gd_wait_frames".into(), args: json!({"frames": 2}) }).unwrap();
+        d.run_frame(&in_rx, &out_tx, 16.0);
+        assert_eq!(d.history().in_flight_count(), 1);
+        assert!(d.history().is_empty());
+        d.run_frame(&in_rx, &out_tx, 16.0);
+        d.run_frame(&in_rx, &out_tx, 16.0);
+        assert!(out_rx.recv().unwrap().ok);
+        assert_eq!(d.history().in_flight_count(), 0);
+        let record = d.history().records_since(0).next().unwrap();
+        assert_eq!(record.tool, "gd_wait_frames");
+        assert!(record.error_code.is_none());
     }
 }

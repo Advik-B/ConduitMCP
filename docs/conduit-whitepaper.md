@@ -280,6 +280,14 @@ Two honest caveats. First, the fine-grained messages for stepping and stack requ
 
 One cross-cutting consequence deserves emphasis. While a session is breaked, the game's main loop is halted inside the engine, so the game bridge's `_process` drain does not run and game-bridge tools will not complete. This is correct and expected. The broker knows the debug session state through the editor bridge and surfaces the condition as a distinct `game_breaked` error (retryable after continue) rather than a generic timeout, directing the agent to the debugger tools that do work in that state.
 
+### 6.10 Editor status surface
+
+The collaboration-transparency goal (section 4.1) also runs editor-ward: the human sharing the session should see the agent link without asking the agent. The editor bridge therefore adds two small pieces of its own UI, the only bridge-initiated UI in the system. A colored dot in the editor's top toolbar shows the link state at a glance — waiting for a broker, broker connected, or inactive (not activated, or the bind failed) — and clicking it opens a "Conduit" bottom panel with the same state in words (endpoint, connection uptime, call counts) above a history of tool calls: one row per completed call with its local time, tool name, outcome, and duration.
+
+The state shown is socket-level by design. The bridge observes only accept and close on its own listener, never the broker's identity or the MCP client's session — the hello frame flows bridge-to-broker only (section 7.5), and this surface introduces no protocol change. Because the broker's process lifetime tracks the MCP client that spawned it (section 6.2), a live socket is an honest proxy for an attached agent. Connection state crosses from the IO thread to the main thread as a single atomic snapshot polled once per frame, keeping section 6.4 intact.
+
+The history is an in-memory ring of the calls this bridge executed, recorded at the dispatcher: tool name, outcome, and duration only — never arguments or results, so memory stays bounded and payloads cannot leak into the UI. It holds the last 200 completed calls, exists only for the editor personality, and does not persist; the broker's audit log (section 9) remains the durable, complete record. Calls that never reach the dispatcher (IO-side busy rejections, malformed frames) and calls the editor bridge never sees (game-bridge tools, broker-only tools) are out of scope here and in scope there.
+
 ---
 
 ## 7. The command protocol
@@ -490,10 +498,13 @@ conduit/
       lib.rs                      # gdext entry point, InitLevel wiring
       plugin.rs                   # ConduitBridge EditorPlugin, _process drain loop
       dispatcher.rs               # command execution on main thread, id correlation
+      history.rs                  # in-memory ring of completed tool calls (section 6.10)
+      editor_ui.rs                # toolbar status indicator and Conduit bottom panel (section 6.10)
       transport/
         mod.rs
         ipc.rs                    # local-socket listener (interprocess crate), framing
         channels.rs               # bounded inbound/outbound queues
+        status.rs                 # broker-link state shared IO thread to main thread
       variant_json.rs             # tagged JSON <-> Variant conversion
       handlers/
         mod.rs                    # handler registry, routing by tool name

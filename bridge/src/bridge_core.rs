@@ -13,9 +13,11 @@ use godot::prelude::*;
 
 use crate::dispatcher::{Dispatcher, DrainBudget};
 use crate::handlers::HandlerRegistry;
+use crate::history::ToolHistory;
 use crate::protocol::{Command, EventSender, Hello, Response, PROTOCOL_VERSION};
 use crate::transport::channels::CommandChannels;
 use crate::transport::ipc::{endpoint, ActivationContext, Listener, Role};
+use crate::transport::status::{LinkSnapshot, LinkStatus};
 
 /// Owns the dispatcher, the channel endpoints, and the listener handle for one
 /// bridge personality. Constructed in the node's `init`, wired up in
@@ -38,6 +40,9 @@ pub struct BridgeCore {
     listener_endpoints: Option<ListenerEndpoints>,
     dispatcher: Dispatcher,
     listener: Option<Listener>,
+    link: LinkStatus,
+    endpoint_display: Option<String>,
+    bind_failed: bool,
 }
 
 impl BridgeCore {
@@ -56,6 +61,9 @@ impl BridgeCore {
             }),
             dispatcher,
             listener: None,
+            link: LinkStatus::default(),
+            endpoint_display: None,
+            bind_failed: false,
         }
     }
 
@@ -80,13 +88,15 @@ impl BridgeCore {
         };
         let project = project_path();
         let ep = endpoint(self.role, &project);
+        self.endpoint_display = Some(ep.display().to_string());
         let hello = build_hello(self.role, &project).to_frame_payload();
-        match Listener::spawn(ep, hello, inbound_tx, outbound_rx, event_rx) {
+        match Listener::spawn(ep, hello, inbound_tx, outbound_rx, event_rx, self.link.clone()) {
             Ok(listener) => {
                 godot_print!("Conduit ({}): listening on {}", self.role.as_str(), listener.display());
                 self.listener = Some(listener);
             }
             Err(err) => {
+                self.bind_failed = true;
                 godot_error!("Conduit ({}): failed to bind command listener: {err}", self.role.as_str());
             }
         }
@@ -102,6 +112,28 @@ impl BridgeCore {
         if let Some(mut listener) = self.listener.take() {
             listener.stop();
         }
+        // Safe to write from the main thread: stop() above joined the IO thread,
+        // so no other writer exists (see transport::status).
+        self.link.mark_inactive();
+    }
+
+    /// One consistent read of the broker-link state for the editor UI.
+    pub fn link_snapshot(&self) -> LinkSnapshot {
+        self.link.snapshot()
+    }
+
+    /// The endpoint this bridge listens on (recorded even when the bind failed).
+    pub fn endpoint_display(&self) -> Option<&str> {
+        self.endpoint_display.as_deref()
+    }
+
+    pub fn bind_failed(&self) -> bool {
+        self.bind_failed
+    }
+
+    /// The dispatcher's completed-call ring, read by the editor panel.
+    pub fn history(&self) -> &ToolHistory {
+        self.dispatcher.history()
     }
 }
 

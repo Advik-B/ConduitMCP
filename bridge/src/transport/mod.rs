@@ -3,3 +3,4 @@
 
 pub mod channels;
 pub mod ipc;
+pub mod status;

@@ -6,6 +6,7 @@
 
 pub mod dispatcher;
 pub mod handlers;
+pub mod history;
 pub mod protocol;
 pub mod transport;
 pub mod variant_json;
@@ -13,6 +14,7 @@ pub mod variant_json;
 mod base64;
 mod bridge_core;
 mod debugger;
+mod editor_ui;
 mod log_tail;
 mod plugin;
 mod runtime_node;
