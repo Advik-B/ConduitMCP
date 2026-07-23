@@ -1,6 +1,5 @@
 {
   "name": "conduit-mcp-server",
-  "version": "0.3.0",
   "description": "Conduit broker: an MCP stdio server aggregating the Godot editor and game bridges.",
   "type": "module",
   "private": true,
