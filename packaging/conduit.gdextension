@@ -1,0 +1,12 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.4
+reloadable = true
+
+[libraries]
+linux.debug.x86_64 = "res://addons/conduit/bin/libconduit.so"
+linux.release.x86_64 = "res://addons/conduit/bin/libconduit.so"
+windows.debug.x86_64 = "res://addons/conduit/bin/conduit.dll"
+windows.release.x86_64 = "res://addons/conduit/bin/conduit.dll"
+macos.debug = "res://addons/conduit/bin/libconduit.dylib"
+macos.release = "res://addons/conduit/bin/libconduit.dylib"
