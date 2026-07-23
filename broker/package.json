@@ -4,6 +4,7 @@
   "description": "Conduit broker: an MCP stdio server aggregating the Godot editor and game bridges.",
   "type": "module",
   "private": true,
+  "license": "MIT",
   "bin": {
     "conduit-mcp-server": "src/index.ts"
   },

@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - run: bun scripts/check-version.ts
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      - run: bun install --frozen-lockfile
+      - run: bun test
+        working-directory: broker
+      - run: bun run typecheck
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x64
+          - os: windows-latest
+            platform: windows-x64
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+      - run: cargo test --workspace
+      - run: mkdir -p out/bridge out/broker
+      - name: Build linux
+        if: matrix.platform == 'linux-x64'
+        run: cargo build --release -p conduit && cp target/release/libconduit.so out/bridge/ && bun build --compile broker/src/index.ts --outfile out/broker/conduit-mcp-server-linux-x64
+      - name: Build windows
+        if: matrix.platform == 'windows-x64'
+        run: cargo build --release -p conduit && cp target/release/conduit.dll out/bridge/ && bun build --compile broker/src/index.ts --outfile out/broker/conduit-mcp-server-windows-x64.exe
+      - name: Build macos universal
+        if: matrix.platform == 'macos'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin && cargo build --release -p conduit --target x86_64-apple-darwin && cargo build --release -p conduit --target aarch64-apple-darwin && lipo -create -output out/bridge/libconduit.dylib target/x86_64-apple-darwin/release/libconduit.dylib target/aarch64-apple-darwin/release/libconduit.dylib
+      - name: Build macos brokers
+        if: matrix.platform == 'macos'
+        run: bun build --compile broker/src/index.ts --outfile out/broker/conduit-mcp-server-darwin-arm64 && bun build --compile --target=bun-darwin-x64 broker/src/index.ts --outfile out/broker/conduit-mcp-server-darwin-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-${{ matrix.platform }}
+          path: out/bridge
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: broker-${{ matrix.platform }}
+          path: out/broker
+          if-no-files-found: error
+
+  integration:
+    runs-on: ubuntu-22.04
+    env:
+      GODOT_VERSION: 4.7.1-stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - uses: actions/cache@v4
+        with:
+          path: tools/godot
+          key: godot-${{ runner.os }}-${{ env.GODOT_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/setup.ts
+      - run: cargo build -p conduit
+      - run: bun run ci:phases
+
+  assemble:
+    needs: [build, integration]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - run: bun scripts/package-addon.ts --artifacts artifacts --out dist
+      - run: cp artifacts/broker-*/conduit-mcp-server-* dist/
+      - run: cd dist && sha256sum conduit-* > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+          if-no-files-found: error
+      - name: Create release
+        if: github.ref_type == 'tag'
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "Conduit $GITHUB_REF_NAME" dist/conduit-addon-*.zip dist/conduit-mcp-server-* dist/SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
