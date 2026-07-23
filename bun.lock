@@ -14,12 +14,11 @@
     },
     "broker": {
       "name": "conduit-mcp-server",
-      "version": "0.1.0",
       "bin": {
         "conduit-mcp-server": "src/index.ts",
       },
       "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.12.0",
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "zod": "^3.23.8",
       },
       "devDependencies": {

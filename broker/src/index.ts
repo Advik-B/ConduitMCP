@@ -12,6 +12,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+// The workspace Cargo.toml is the single source of the project version; the
+// bridge reads it as CARGO_PKG_VERSION and the broker bundles it here.
+import cargo from "../../Cargo.toml";
+
+const VERSION: string = cargo.workspace.package.version;
+
 import { BridgeManager } from "./bridge-manager.ts";
 import { type Endpoint, editorEndpoint, editorEndpointFromOverride, endpointKey } from "./endpoint.ts";
 import { EventRing } from "./events.ts";
@@ -467,7 +473,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
 
 async function main(): Promise<void> {
   const config = resolveConfig();
-  const server = new McpServer({ name: "conduit", version: "0.3.0" });
+  const server = new McpServer({ name: "conduit", version: VERSION });
 
   // Assigned after registerTools; the ring's notify closure runs only once
   // events start flowing, which is after main() finishes wiring.

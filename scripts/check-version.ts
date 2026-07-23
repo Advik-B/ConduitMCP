@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
-// Release-gate version check: Cargo.toml, Cargo.lock, and both package.json
-// files must agree, and when TAG is set (tag builds) it must equal v<version>.
-// Run with `bun scripts/check-version.ts`.
+// Release-gate version check. The workspace Cargo.toml is the single source of
+// the project version: the bridge reads it as CARGO_PKG_VERSION and the broker
+// imports it directly, so this only verifies Cargo.lock was refreshed, that no
+// package.json reintroduces its own version, and that a TAG (tag builds)
+// matches v<version>. Run with `bun scripts/check-version.ts`.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,34 +29,27 @@ function cargoLockVersion(): string {
   return match[1];
 }
 
-function packageJsonVersion(relative: string): string {
+function requireNoPackageJsonVersion(relative: string): void {
   const parsed = JSON.parse(readFileSync(join(repoRoot, relative), "utf8")) as { version?: string };
-  if (!parsed.version) {
-    throw new Error(`no version in ${relative}`);
+  if (parsed.version !== undefined) {
+    console.error(`${relative} declares a version; the version lives in the workspace Cargo.toml only`);
+    process.exit(1);
   }
-  return parsed.version;
 }
 
-const versions: Record<string, string> = {
-  "Cargo.toml": cargoTomlVersion(),
-  "Cargo.lock": cargoLockVersion(),
-  "package.json": packageJsonVersion("package.json"),
-  "broker/package.json": packageJsonVersion(join("broker", "package.json")),
-};
-
-const distinct = new Set(Object.values(versions));
-if (distinct.size !== 1) {
-  const listing = Object.entries(versions)
-    .map(([file, version]) => `${file}: ${version}`)
-    .join(", ");
-  console.error(`version mismatch: ${listing}`);
+const version = cargoTomlVersion();
+const lockVersion = cargoLockVersion();
+if (version !== lockVersion) {
+  console.error(`Cargo.lock pins conduit ${lockVersion} but Cargo.toml says ${version}; run cargo check and commit the lock`);
   process.exit(1);
 }
 
-const version = [...distinct][0];
+requireNoPackageJsonVersion("package.json");
+requireNoPackageJsonVersion(join("broker", "package.json"));
+
 const tag = process.env.TAG;
 if (tag && tag !== `v${version}`) {
-  console.error(`tag ${tag} does not match manifest version v${version}`);
+  console.error(`tag ${tag} does not match Cargo.toml version v${version}`);
   process.exit(1);
 }
 
