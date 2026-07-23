@@ -31,7 +31,9 @@ use interprocess::local_socket::{GenericNamespaced, ToNsName};
 use interprocess::local_socket::{GenericFilePath, ToFsName};
 use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, Stream};
 
-use crate::protocol::{write_frame, BridgeError, Command, FrameDecoder, Response};
+#[cfg(windows)]
+use crate::protocol::write_frame;
+use crate::protocol::{BridgeError, Command, FrameDecoder, Response};
 use crate::transport::status::LinkStatus;
 
 /// The facts that decide whether the command listener may bind. Kept as plain
@@ -269,6 +271,11 @@ impl Listener {
         match endpoint.kind {
             #[cfg(unix)]
             EndpointKind::File(path) => {
+                // The runtime dir may not exist yet (fresh CONDUIT_RUNTIME_DIR);
+                // binding into a missing directory fails with ENOENT.
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
                 // A stale socket file from a previous run would block the bind.
                 let _ = std::fs::remove_file(&path);
                 let name = path

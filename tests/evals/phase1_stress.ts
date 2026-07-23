@@ -12,6 +12,7 @@
 //
 // Run with `bun tests/evals/phase1_stress.ts`.
 
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -60,6 +61,9 @@ async function main(): Promise<void> {
     repoRoot,
   );
   record("engine_free_tests", cargoTests === 0, cargoTests === 0 ? "cargo test passed" : "cargo test failed");
+
+  rmSync(RUNTIME_DIR, { recursive: true, force: true });
+  mkdirSync(RUNTIME_DIR, { recursive: true });
 
   console.log("\nLaunching headless editor ...");
   // Hash-based discovery: the bridge and broker derive the same endpoint from the
