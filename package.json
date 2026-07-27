@@ -7,6 +7,7 @@
   "workspaces": ["broker"],
   "scripts": {
     "setup": "bun scripts/setup.ts",
+    "demo": "bun scripts/demo/record.ts",
     "typecheck": "tsc --noEmit",
     "ci:phases": "bun run stress && bun run phase3 && bun run phase4 && bun run phase7 && bun run phase8 && bun run phase9",
     "stress": "bun tests/evals/phase1_stress.ts",
