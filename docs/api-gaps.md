@@ -122,6 +122,39 @@ Capturing a genuine frame in CI requires a virtual display:
 `scripts/setup.ts` installs this tooling on Linux. Audio drivers fail under this
 environment and fall back to the dummy driver, which is harmless for the tools.
 
+## Video capture of the editor is Linux-only
+
+`scripts/demo/` records the README demo by grabbing the X display the editor
+renders to (`ffmpeg -f x11grab`) on a virtual display the runner owns, which is
+why `harness.ts` gained `startVirtualDisplay` alongside the existing `xvfb-run`
+wrap: `xvfb-run -a` picks a display number the caller cannot predict, so nothing
+outside the Godot process can attach to it. Windows and macOS render to a native
+display and would need `gdigrab` and `avfoundation` respectively; neither is
+wired up, and `bun run demo` refuses to run there rather than pretending.
+
+The editor window is launched with `--position 0,0 --resolution 1600x900` and
+lands there with no window manager running, so the grab needs no window
+placement step. Under Godot 4.7 the launched game embeds inside the editor
+window, so recording the editor also records the running game.
+
+## make_bottom_panel_item_visible does not raise the Conduit panel under 4.7
+
+`ConduitBridge::on_indicator_pressed` calls `EditorPlugin::make_bottom_panel_item_visible`
+with the panel it registered via `add_control_to_bottom_panel`. Under Godot
+4.7.1 the panel is reparented into an `EditorDock` wrapper
+(`@EditorBottomPanel/@EditorDock/@ConduitPanel`) and the call does not bring the
+tab forward; the bottom panel keeps whatever tab was selected. Pressing the
+toolbar dot through `gd_editor_pixel_click` reaches the indicator and the signal
+fires, so the gap is in the raise, not the input path.
+
+The bottom panel's tab buttons are also not reachable from tier 2: a full
+`gd_editor_ui op=find` walk of the editor base control (4655 controls) returns
+nothing in the bottom tab strip, so there is no control to click as a
+workaround. The demo therefore does not claim to open the panel on camera. The
+editor's Output log still carries a line per undo-wrapped action
+(`Conduit: Add ColorRect`, `Conduit: Attach res://coin.gd to Coin1`), which is
+visible in the recording without any UI driving.
+
 ## gd_signal await
 
 The `await` op is implemented by delegating to the evaluation runner with a

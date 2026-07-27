@@ -6,9 +6,22 @@
 
 Conduit gives an AI agent full, native control of the Godot editor and the running game. It is not a file-level integration: a Rust GDExtension loads into the Godot process itself, so the agent edits scenes undo-safely inside a live editor, presses play, watches frames, injects input, sets breakpoints, and inspects the halted game, through one MCP server.
 
-![The Godot editor showing a 2D platformer scene assembled by an agent through Conduit's editing tools](docs/media/editor-agent-scene.png)
+## Watch it work
 
-The scene above was built by an agent through Conduit's undo-wrapped editing tools; every change lands in the editor's undo history exactly as if a human had made it, while the developer watches it happen in their own editor.
+![An agent building a level in the Godot editor through Conduit: nodes appear in the scene dock, a script is written and attached, the level is dismantled by undo and rebuilt by redo, the game runs and is driven by simulated input, and the editor halts at a breakpoint](docs/media/demo.gif)
+
+One editor session, recorded end to end: [the full take is `docs/media/demo.mp4`](docs/media/demo.mp4), around 1 min 45 s. It runs at real speed with no cuts, and the loop above is a few seconds lifted from each chapter of that same recording. Every caption is the MCP tool call being made at that moment. The sequence of calls is scripted so the video is reproducible from a checkout rather than different every take, but the calls themselves are the ordinary MCP tool surface with no opt-in flags, and what you see is a real editor responding to them.
+
+1. **Building a scene through the editor's own API**: a new scene, then a level assembled node by node with typed properties, the scene dock and inspector following along.
+2. **Writing a script, checking it compiles, attaching it**: `gd_script_create`, `gd_script_validate`, `gd_script_attach`, then the script open in the editor at the line that matters.
+3. **Signals, groups, the input map, and a saved scene**: the wiring that turns a scene into a game, all persisted.
+4. **Every edit is in the editor's own undo history**: repeated `gd_undo` takes the level apart node by node until nothing is left, then `gd_redo` puts it back. This is what a file-level integration cannot do.
+5. **Running the game and driving it with simulated input**: `gd_play`, a held movement action, live property reads off the running node, time scale.
+6. **The project's own methods, surfaced as MCP tools**: a node in the `conduit_tools` group turns `spawn_coins` into `gd_project_spawn_coins`, and calling it spawns coins in the running game.
+7. **A breakpoint, tripped by the agent, read in the editor**: the game halts on `player.gd:24`, and the call stack, locals, and remote inspector are all there.
+8. **What is left behind is an ordinary Godot project**: a normal `.tscn` and normal `.gd` files, in the project where a human would have put them.
+
+Reproduce it with `bun run demo`, which drives a throwaway copy of `example-project/` and regenerates both files (Linux only; see [docs/api-gaps.md](docs/api-gaps.md)).
 
 ## How it works
 
@@ -24,6 +37,9 @@ Nothing listens on the network, and the bridge refuses to activate in release bu
 87 tools, 82 exposed by default and the rest behind opt-in flags. The broad strokes:
 
 - **Edit scenes the way the editor does**: open, create, and save scenes; add, remove, reparent, rename, and duplicate nodes; set properties with full Godot typing (vectors, colors, resources); attach and validate scripts; wire signals and groups; manage autoloads and the input map. Every mutation is undo-wrapped, so one `gd_undo` reverses it and the developer's undo history stays coherent.
+
+![The Godot editor showing a 2D platformer scene assembled by an agent through Conduit's editing tools](docs/media/editor-agent-scene.png)
+
 - **Run and observe the game**: `gd_play` launches the game and connects its bridge; then the agent reads and writes live node properties, calls methods, simulates keyboard, mouse, gamepad, and touch input, waits precise frame counts, pauses and steps, reads logs and errors, and captures screenshots of what the game actually rendered.
 
 ![A space scene assembled at runtime inside the running game by gd_game_eval, captured with gd_screenshot](docs/media/game-screenshot.png)
@@ -35,7 +51,7 @@ Nothing listens on the network, and the bridge refuses to activate in release bu
 ![The editor halted at a breakpoint in player.gd with the call stack and locals visible](docs/media/debugger-break.png)
 
 - **Ground itself in the engine**: query ClassDB for any class's properties, methods, and signals, so the agent works from the engine's actual API surface instead of guessing.
-- **Stay legible to the human**: select and inspect nodes in the developer's editor, open scripts at a line, observe and dismiss dialogs, and capture editor screenshots, so a person watching the editor can follow what the agent is doing.
+- **Stay legible to the human**: select and inspect nodes in the developer's editor, open scripts at a line, observe and dismiss dialogs, and capture editor screenshots, so a person watching the editor can follow what the agent is doing. A toolbar indicator shows the link state, the editor's Output log carries a line per undo-wrapped action, and a Conduit bottom panel lists the tool-call history.
 - **Expose project-defined tools**: methods on nodes in a `conduit_tools` group appear as first-class MCP tools with typed schemas, so a project can teach the agent verbs like `gd_project_spawn_wave`.
 
 ## Requirements
@@ -113,7 +129,7 @@ cargo build --release
 bun install --frozen-lockfile
 ```
 
-The bridge library lands in `target/release/`; `bridge/conduit.gdextension` shows the development-layout manifest that loads it straight from the cargo target directory. `bun test` in `broker/` runs the broker unit tests; the `tests/evals/` phase runners are integration acceptance tests that drive a real Godot editor (see `scripts/setup.ts` for fetching a pinned engine build). `scripts/capture-media.ts` regenerates the screenshots above through Conduit's own screenshot tools.
+The bridge library lands in `target/release/`; `bridge/conduit.gdextension` shows the development-layout manifest that loads it straight from the cargo target directory. `bun test` in `broker/` runs the broker unit tests; the `tests/evals/` phase runners are integration acceptance tests that drive a real Godot editor (see `scripts/setup.ts` for fetching a pinned engine build). `scripts/capture-media.ts` regenerates the screenshots above through Conduit's own screenshot tools, and `bun run demo` (`scripts/demo/`) re-records the video at the top by driving a live editor while capturing the display it renders to.
 
 ## Status and compatibility
 
