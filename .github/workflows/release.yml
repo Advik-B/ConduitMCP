@@ -127,9 +127,12 @@ jobs:
     needs: assemble
     if: github.ref_type == 'tag'
     runs-on: ubuntu-22.04
-    # Least privilege: this job carries the npm token and only needs to read the
-    # tree, unlike the contents: write the rest of the workflow inherits.
+    # Trusted publishing (OIDC): id-token lets the runner mint a token npm
+    # exchanges for a credential good for one publish, so no npm secret is
+    # stored anywhere. contents stays read because this job only reads the tree,
+    # unlike the contents: write the rest of the workflow inherits.
     permissions:
+      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -138,6 +141,19 @@ jobs:
           bun-version: 1.3.11
       - run: bun install --frozen-lockfile
       - run: bun run pack:npm
+      # bun publish cannot do OIDC (oven-sh/bun#22423), so npm uploads the
+      # tarball Bun just built. This is the only npm invocation in the repo.
+      # setup-node must be v7 or newer: earlier majors wrote a dummy _authToken
+      # into .npmrc whenever registry-url was set, which npm read as "already
+      # authenticated" and then skipped the OIDC exchange.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      # Trusted publishing needs npm 11.5.1 or newer; the version bundled with
+      # a given Node image drifts, so pin it rather than inherit it.
+      - run: npm install -g npm@latest
       - name: Check whether this version is already on npm
         id: published
         run: |
@@ -153,8 +169,8 @@ jobs:
             echo "unexpected registry response $code for $name@$version"
             exit 1
           fi
+      # No --provenance flag: trusted publishing generates the attestation
+      # automatically, and passing it explicitly is an error.
       - name: Publish
         if: steps.published.outputs.already-published == 'false'
-        run: cd dist/npm && bun publish
-        env:
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: cd dist/npm && npm publish

@@ -166,7 +166,9 @@ async function main(): Promise<void> {
   writeFileSync(join(outDir, "README.md"), readme(version));
 
   console.log(`staged ${PACKAGE_NAME} ${version} in ${outDir}`);
-  console.log(`publish with: cd ${join("dist", "npm")} && bun publish`);
+  // Tagged releases publish from the release workflow over OIDC. This manual
+  // path is for the first publish, before a trusted publisher can be registered.
+  console.log(`first publish (token auth): cd ${join("dist", "npm")} && bun publish`);
 }
 
 main().catch((error) => {
