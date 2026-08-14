@@ -130,18 +130,26 @@ is published on [Releases](${REPO_URL}/releases); use its absolute path as the
 
 ## Flags
 
+Run \`npx ${PACKAGE_NAME} --help\` for the full list; every option has a
+\`CONDUIT_\` environment variable equivalent, and the option wins.
+
 | Flag | Env | Effect |
 | --- | --- | --- |
-| \`--project <path>\` | \`CONDUIT_PROJECT\` | The Godot project to attach to (required, or \`CONDUIT_SOCK\`). |
+| \`--project <path>\` | \`CONDUIT_PROJECT\` | The Godot project to attach to (required, or \`--sock\`). |
 | \`--auto-install\` | \`CONDUIT_AUTO_INSTALL\` | Install the matching addon into the project if it has none (off by default). |
 | \`--addon-source <path>\` | \`CONDUIT_ADDON_SOURCE\` | Install the addon from a local zip, directory, or URL instead of the release. |
 | \`--godot <path>\` | \`CONDUIT_GODOT\` | Override the engine binary for \`gd_editor_launch\`; found automatically otherwise. |
 | \`--enable-pixel-tools\` | \`CONDUIT_ENABLE_PIXEL_TOOLS\` | Enable coordinate-level editor mouse tools (off by default). |
 | \`--enable-editor-eval\` | \`CONDUIT_ENABLE_EDITOR_EVAL\` | Enable \`gd_editor_eval\` (off by default). |
 | \`--disable-eval\` | \`CONDUIT_DISABLE_EVAL\` | Drop the whole eval class of tools. |
+| \`--tool-groups <list>\` | \`CONDUIT_TOOL_GROUPS\` | Slim the tool surface: \`scene,runtime\` keeps those groups, \`-net,-audio\` drops them. |
+| \`--audit-log <path>\` | \`CONDUIT_AUDIT_LOG\` | Append a JSONL record of every tool call (off by default); \`--audit-max-bytes\` sets the rotation size. |
+| \`--timeout-ms <n>\` | \`CONDUIT_TIMEOUT_MS\` | Ordinary tool timeout, default 10000; also \`--eval-timeout-ms\` and \`--export-timeout-ms\`. |
+| \`--runtime-dir\`, \`--sock\`, \`--tcp\` | \`CONDUIT_RUNTIME_DIR\`, \`CONDUIT_SOCK\`, \`CONDUIT_TCP\` | Where the broker and bridge meet; rarely needed. |
 
 Boolean variables are off when unset, empty, \`0\`, \`false\`, \`no\`, or \`off\`, and
-on for anything else.
+on for anything else. Flags with a \`--no-\` form override the variable the other
+way.
 
 Every variable Conduit reads, including the transport and engine-side ones, is
 documented in [docs/environment.md](${REPO_URL}/blob/master/docs/environment.md).

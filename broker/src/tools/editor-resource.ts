@@ -6,10 +6,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { AWAIT_TIMEOUT_MS, makeEditorTool } from "../tool-helpers.ts";
+import { type Timeouts, makeEditorTool } from "../tool-helpers.ts";
 
-export function registerEditorResourceTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorResourceTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_resource_create",
@@ -19,7 +19,7 @@ export function registerEditorResourceTools(server: McpServer, manager: BridgeMa
       path: z.string().describe("res:// path to save the new resource to."),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   editorTool(
@@ -31,6 +31,6 @@ export function registerEditorResourceTools(server: McpServer, manager: BridgeMa
       value: z.any().describe("New value; plain JSON or a tagged Godot type."),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 }

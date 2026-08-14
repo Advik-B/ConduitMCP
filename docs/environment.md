@@ -1,13 +1,18 @@
-# Environment variables
+# Configuration
 
-Every environment variable Conduit reads, in three groups. The groups matter:
-the first two configure a running system, the third exists only for building and
-testing Conduit itself and has no effect on an installed broker.
+Every command-line option and environment variable Conduit reads, in three
+groups. The groups matter: the first two configure a running system, the third
+exists only for building and testing Conduit itself and has no effect on an
+installed broker.
 
 Nothing here is required for ordinary use. Point the broker at a Godot project
 and it derives everything else: the editor endpoint from the project path, the
 engine binary from your PATH when a tool needs one, and the addon from the
 release matching its own version.
+
+Every broker variable has a command-line option, and the option wins. Run
+`conduit-mcp-server --help` for the same list from the broker itself; it prints
+to stderr, because stdout carries the MCP protocol.
 
 ## Boolean values
 
@@ -21,21 +26,29 @@ each other on different transports.
 
 ## Broker
 
-Read by the MCP server, `conduit-mcp-server`. Where a command-line flag exists it
-takes precedence over the environment variable.
+Read by the MCP server, `conduit-mcp-server`. The command-line option always
+takes precedence over the environment variable, and an unknown option is a
+startup error rather than a silent no-op.
 
 | Variable | Flag | Effect |
 | --- | --- | --- |
-| `CONDUIT_PROJECT` | `--project <path>` | The Godot project directory to attach to. Required unless `CONDUIT_SOCK` is set. Resolved to an absolute path, so a relative value is interpreted against the broker's working directory, which an MCP client chooses; prefer an absolute path. |
-| `CONDUIT_SOCK` | | An explicit editor endpoint, used verbatim: a socket path on Linux and macOS, a pipe name or full `\\.\pipe\` path on Windows. Bypasses the project-path hash entirely. Mostly for tests and unusual sandboxes. Game bridges deliberately ignore it, so an editor-launched game does not collide with the editor's endpoint. |
-| `CONDUIT_RUNTIME_DIR` | | Directory holding the Unix socket endpoints, and where a broker-launched editor writes its log. Defaults to the system temp directory. Keep it short: a Unix socket path must fit `sun_path`, about 104 bytes on macOS. Unused on Windows, where the transport is a named pipe. |
-| `CONDUIT_TCP` | | *Flag.* Use a loopback TCP endpoint instead of a Unix socket or named pipe. The port is derived from the same hash as the endpoint name, in the 49152-65535 range, bound to `127.0.0.1` only. For sandboxes where local sockets are unavailable; it also disables the endpoint scan the broker uses to explain a missing editor, because a TCP port has nothing to enumerate. |
+| `CONDUIT_PROJECT` | `--project <path>` | The Godot project directory to attach to. Required unless `--sock` is given. Resolved to an absolute path, so a relative value is interpreted against the broker's working directory, which an MCP client chooses; prefer an absolute path. |
+| `CONDUIT_SOCK` | `--sock <path>` | An explicit editor endpoint, used verbatim: a socket path on Linux and macOS, a pipe name or full `\\.\pipe\` path on Windows. Bypasses the project-path hash entirely. Mostly for tests and unusual sandboxes. Game bridges deliberately ignore it, so an editor-launched game does not collide with the editor's endpoint. |
+| `CONDUIT_RUNTIME_DIR` | `--runtime-dir <path>` | Directory holding the Unix socket endpoints, and where a broker-launched editor writes its log. Defaults to the system temp directory. Keep it short: a Unix socket path must fit `sun_path`, about 104 bytes on macOS. Unused on Windows, where the transport is a named pipe. |
+| `CONDUIT_TCP` | `--tcp` / `--no-tcp` | *Flag.* Use a loopback TCP endpoint instead of a Unix socket or named pipe. The port is derived from the same hash as the endpoint name, in the 49152-65535 range, bound to `127.0.0.1` only. For sandboxes where local sockets are unavailable; it also disables the endpoint scan the broker uses to explain a missing editor, because a TCP port has nothing to enumerate. |
 | `CONDUIT_GODOT` | `--godot <path>` | Override the engine binary used by `gd_editor_launch`. Not needed normally: the broker looks on `PATH` (`godot4`, `godot`, `Godot`) and then in the usual per-platform install locations. Attaching to an editor you opened yourself never uses this. |
-| `CONDUIT_AUTO_INSTALL` | `--auto-install` | *Flag.* On startup, if the configured directory is a Godot project with no addon installed, download the addon matching this broker's version and write it to `addons/conduit/`, then register the `ConduitRuntime` autoload in `project.godot` (backing the file up to `project.godot.conduit-backup` first). Off by default. See [Addon installation](#addon-installation). |
+| `CONDUIT_AUTO_INSTALL` | `--auto-install` / `--no-auto-install` | *Flag.* On startup, if the configured directory is a Godot project with no addon installed, download the addon matching this broker's version and write it to `addons/conduit/`, then register the `ConduitRuntime` autoload in `project.godot` (backing the file up to `project.godot.conduit-backup` first). Off by default. See [Addon installation](#addon-installation). |
 | `CONDUIT_ADDON_SOURCE` | `--addon-source <path\|url>` | Where the addon comes from instead of the GitHub release: a local `.zip`, an already-unpacked directory, or a URL. Use it for offline installs, air-gapped machines, or testing a build before it is released. |
 | `CONDUIT_ENABLE_PIXEL_TOOLS` | `--enable-pixel-tools` | *Flag.* Register the tier-3 editor mouse tools, which drive the editor by screen coordinate. Off by default (whitepaper section 9). |
 | `CONDUIT_ENABLE_EDITOR_EVAL` | `--enable-editor-eval` | *Flag.* Register `gd_editor_eval`, which runs arbitrary GDScript in the editor process with the editor's full authority over the project. Off by default. |
 | `CONDUIT_DISABLE_EVAL` | `--disable-eval` | *Flag.* Drop the entire eval class: `gd_game_eval`, `gd_editor_eval`, the networking tools, and project-defined `gd_project_*` tools. Wins over the two opt-ins above. |
+| `CONDUIT_TIMEOUT_MS` | `--timeout-ms <n>` | Timeout for an ordinary tool call, in milliseconds. Default 10000. |
+| `CONDUIT_EVAL_TIMEOUT_MS` | `--eval-timeout-ms <n>` | Timeout for await-capable and eval-class calls: `gd_game_eval`, `gd_editor_eval`, `gd_project_*`, signal and frame waits, screenshots. Default 120000. |
+| `CONDUIT_EXPORT_TIMEOUT_MS` | `--export-timeout-ms <n>` | Timeout for `gd_export_project`, which re-imports the whole project before packing. Default 600000. |
+| `CONDUIT_AUDIT_LOG` | `--audit-log <path\|off>` | Append a JSONL record of every tool call to this file. Off unless set; `off` disables it explicitly. See [Audit log](#audit-log). |
+| `CONDUIT_AUDIT_MAX_BYTES` | `--audit-max-bytes <n>` | Rotate the audit log once it passes this size. Default 16777216 (16 MiB). |
+| `CONDUIT_TOOL_GROUPS` | `--tool-groups <list>` | Slim the tool surface to the named groups, or drop groups with `-name` entries. See [Tool groups](#tool-groups). |
+| | `--version`, `--help` | Print the version or the option list to stderr and exit. |
 
 ## Engine
 
@@ -60,6 +73,51 @@ reads none of these; in particular the broker never reads `GODOT_BIN`.
 | `GODOT_VERSION` | `scripts/setup.ts`, CI workflows | Pin the Godot release tag `setup.ts` downloads, for example `4.7.1-stable`, instead of resolving the latest. |
 | `TAG` | `scripts/check-version.ts` | The release tag to validate against the workspace `Cargo.toml` version. Set by the release workflow. |
 | `GDRUST_SUPPRESSED_WARNINGS` | gdext, via `scripts/demo/record.ts` | Silences a named gdext warning during demo recording. Consumed by the dependency, not by Conduit. |
+
+## Tool groups
+
+The default surface is 84 tools, which is a lot of context for a client that
+only needs some of it. `--tool-groups` slims it, in either of two forms:
+
+```
+--tool-groups scene,script,runtime    keep only these groups (plus core)
+--tool-groups -net,-audio             keep everything except these
+```
+
+Mixing the forms is an error, as is naming a group that does not exist; both
+messages list the valid groups. The groups are:
+
+`runtime`, `tree`, `physics`, `render`, `audio`, `animation`, `tilemap`,
+`window`, `net`, `scene`, `wiring`, `script`, `resource`, `project`, `state`,
+`assets`, `files`, `export`, `debug`, `collab`, `classdb`, `eval`, `pixel`.
+
+`core` is always registered and cannot be named: it holds `gd_ping`,
+`gd_status`, `gd_game_list`, `gd_get_events`, and the session and addon tools. A
+deployment that had slimmed away `gd_status` could not be diagnosed, and one
+without `gd_addon_install` could not be finished.
+
+Groups only ever subtract from what the other flags already permit. Naming
+`eval` does not reopen `--disable-eval`, and naming `pixel` does not substitute
+for `--enable-pixel-tools`. Project-defined `gd_project_*` tools are not part of
+any group; they appear and disappear with the running game and are governed by
+`--disable-eval`.
+
+## Audit log
+
+`--audit-log <path>` appends one JSON object per line for every tool call:
+time, tool name, arguments, outcome (`ok` or `error` with the error text),
+the result, and duration in milliseconds. It exists for a human to review, or to
+replay or bisect an agent session afterwards.
+
+Payloads over 4 KiB are replaced with `<elided N bytes>` field by field, so a
+`gd_screenshot` record keeps its outcome and timing without carrying a megabyte
+of base64. The file rotates to `<path>.1` once it passes `--audit-max-bytes`,
+keeping one previous generation. A write failure disables the log for that
+session with one line on stderr and never interrupts the broker.
+
+It is off by default. Whitepaper section 9 describes the log as something the
+broker writes and can be disabled; Conduit inverts that, because writing a file
+into someone's filesystem is not something to start doing unasked.
 
 ## Addon installation
 

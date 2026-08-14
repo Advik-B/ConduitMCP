@@ -7,10 +7,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { AWAIT_TIMEOUT_MS, makeEditorTool, toToolError } from "../tool-helpers.ts";
+import { DEFAULT_TIMEOUTS, type Timeouts, makeEditorTool, resolveTimeout, toToolError } from "../tool-helpers.ts";
 
-export function registerEditorCollabTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorCollabTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_editor_select",
@@ -101,7 +101,7 @@ export function registerEditorCollabTools(server: McpServer, manager: BridgeMana
     },
     async (args) => {
       try {
-        const result = (await manager.editorRequest("gd_editor_screenshot", args as Record<string, unknown>, AWAIT_TIMEOUT_MS)) as {
+        const result = (await manager.editorRequest("gd_editor_screenshot", args as Record<string, unknown>, resolveTimeout(timeouts ?? DEFAULT_TIMEOUTS, "await"))) as {
           image_base64: string;
           format: string;
         };

@@ -17,7 +17,7 @@
 //
 // Run with `bun tests/evals/phase9_project_tools.ts` (needs GODOT_BIN).
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -73,15 +73,46 @@ async function callJson(client: Client, name: string, args: Record<string, unkno
   return JSON.parse(text);
 }
 
+/**
+ * The broker under test, with the audit log on.
+ *
+ * Auditing is what puts the tool-registration proxy in the path, and this is the
+ * one runner that registers and removes tools dynamically at runtime. Without it
+ * the proxy short-circuits to the bare server (see wrapServer) and the
+ * combination of proxy, real SDK, and the `gd_project_*` lifecycle would never
+ * be exercised anywhere. `--runtime-dir` rather than CONDUIT_RUNTIME_DIR for the
+ * same reason: it is the only place the option's write-back into the child
+ * editor's environment gets tested end to end.
+ */
 async function connectBroker(env: Record<string, string>): Promise<Client> {
+  const { CONDUIT_RUNTIME_DIR: rtDir, ...rest } = env;
+  const args = [join(repoRoot, "broker", "src", "index.ts"), "--audit-log", auditLogFor(rtDir ?? RUNTIME_A)];
+  if (rtDir) {
+    args.push("--runtime-dir", rtDir);
+  }
   const transport = new StdioClientTransport({
     command: "bun",
-    args: [join(repoRoot, "broker", "src", "index.ts")],
-    env,
+    args,
+    env: rest as Record<string, string>,
   });
   const client = new Client({ name: "phase9-acceptance", version: "0.3.0" });
   await client.connect(transport);
   return client;
+}
+
+function auditLogFor(rtDir: string): string {
+  return join(rtDir, "audit.jsonl");
+}
+
+/** Parse the audit log, failing loudly if any line is not valid JSON. */
+function readAuditRecords(file: string): Array<Record<string, unknown>> {
+  if (!existsSync(file)) {
+    return [];
+  }
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 async function listToolNames(client: Client): Promise<string[]> {
@@ -278,6 +309,26 @@ async function partBCD(godot: string): Promise<void> {
     game = null;
     const cleared = await waitFor(async () => !(await listToolNames(client!)).includes("gd_project_spawn_marker"), 30_000);
     record("tools_cleared_on_game_exit", cleared, `dynamic tools removed after game exit (listChanged ${beforeExit} -> ${listChangedCount})`);
+
+    // The registration proxy carried every call above, including the dynamic
+    // ones, so the log is the proof that auditing did not disturb the
+    // gd_project_* lifecycle it wraps.
+    const records = readAuditRecords(auditLogFor(RUNTIME_B));
+    const projectCalls = records.filter((entry) => String(entry.tool).startsWith("gd_project_"));
+    record(
+      "audit_log_captures_dynamic_tools",
+      records.length > 0 && projectCalls.length > 0,
+      `${records.length} JSONL records, ${projectCalls.length} of them gd_project_*`,
+    );
+    record(
+      "audit_records_are_well_formed",
+      records.every((entry) => typeof entry.time === "string" && typeof entry.duration_ms === "number" && (entry.outcome === "ok" || entry.outcome === "error")),
+      "every record carries time, duration_ms, and an outcome",
+    );
+    // Elision caps any single field at 4 KiB, so a record far past that means a
+    // payload reached the log unelided.
+    const longest = Math.max(0, ...records.map((entry) => JSON.stringify(entry).length));
+    record("audit_records_carry_no_payloads", longest < 16 * 1024, `longest record ${longest} bytes, cap 16384`);
   } finally {
     if (client) {
       await client.callTool({ name: "gd_editor_quit", arguments: {} }).catch(() => {});

@@ -7,10 +7,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { EXPORT_TIMEOUT_MS, makeEditorTool } from "../tool-helpers.ts";
+import { type Timeouts, makeEditorTool } from "../tool-helpers.ts";
 
-export function registerEditorExportTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorExportTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_export_project",
@@ -21,7 +21,7 @@ export function registerEditorExportTools(server: McpServer, manager: BridgeMana
       mode: z.enum(["pack", "debug", "release"]).describe("Export kind: pack (.pck only), debug, or release build."),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    EXPORT_TIMEOUT_MS,
+    "export",
   );
 
   editorTool(

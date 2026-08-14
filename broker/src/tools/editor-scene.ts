@@ -6,10 +6,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { AWAIT_TIMEOUT_MS, makeEditorTool } from "../tool-helpers.ts";
+import { type Timeouts, makeEditorTool } from "../tool-helpers.ts";
 
-export function registerEditorSceneTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorSceneTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_scene_open",
@@ -28,7 +28,7 @@ export function registerEditorSceneTools(server: McpServer, manager: BridgeManag
       open: z.boolean().describe("Open the new scene for editing after creating it (default true).").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   editorTool(

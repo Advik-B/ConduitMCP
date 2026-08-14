@@ -548,9 +548,10 @@ conduit/
     tsconfig.json
     src/
       index.ts                    # MCP server over stdio, tool registration
+      cli.ts                      # Commander option definitions and parsing
       ipc-client.ts               # connects to editor and game bridges, framing
       tools/                      # one module per tool group, Zod schemas + annotations
-      formatting.ts               # JSON and Markdown response formats, pagination
+      tool-registry.ts            # tool-group table, audit and filtering wrapper
       events.ts                   # lifecycle event ring, MCP logging notifications
       audit.ts                    # append-only JSONL audit log
   docs/
@@ -619,7 +620,7 @@ An empty `.gdignore` in the `bridge/` directory keeps Godot from importing the R
 
 **Two-process installation friction.** The bridge must be part of the project (so it loads in the game) and active in the editor. Confirm the single `.gdextension` satisfies both without extra per-project setup, and document the one-time install clearly (section 15).
 
-Of the open questions in the previous draft, the socket naming scheme and editor auto-launch are now specified (sections 7.2 and 8). What remains open: the precise per-request timeout defaults (proposed: 10 seconds for ordinary calls, 120 seconds for `await`-capable evaluation and for export, overridable per call from the broker configuration); whether the `hello` handshake should carry a capability list so the broker can hide tools the connected engine version cannot serve; and how far project-defined tool schemas can be derived from GDScript type hints in practice before an explicit declaration API is needed.
+Of the open questions in the previous draft, the socket naming scheme and editor auto-launch are now specified (sections 7.2 and 8). The timeout question is now settled: 10 seconds for ordinary calls, 120 for `await`-capable evaluation, and 600 for export, which needs its own budget because it re-imports the whole project in a subprocess before packing. All three are overridable at startup (`--timeout-ms`, `--eval-timeout-ms`, `--export-timeout-ms`, section 15). What remains open: whether the `hello` handshake should carry a capability list so the broker can hide tools the connected engine version cannot serve; and how far project-defined tool schemas can be derived from GDScript type hints in practice before an explicit declaration API is needed.
 
 ---
 
@@ -652,7 +653,7 @@ Three walkthroughs ground the taxonomy in practice. Tool names are illustrative 
 }
 ```
 
-**Configuration.** The broker reads command-line flags first, then environment variables: `--project` / `CONDUIT_PROJECT` (required, resolved to an absolute path); `--auto-install` / `CONDUIT_AUTO_INSTALL` and `--addon-source` / `CONDUIT_ADDON_SOURCE` (addon installation, above); `--godot` / `CONDUIT_GODOT` (engine binary path, an override for `gd_editor_launch` only, which otherwise resolves the binary from `PATH` and the per-platform install locations; attaching to a running editor never needs one); `--timeout-ms` and `--eval-timeout-ms` (defaults per section 13); `--enable-pixel-tools` / `CONDUIT_ENABLE_PIXEL_TOOLS` (tier 3, off by default); `--enable-editor-eval` / `CONDUIT_ENABLE_EDITOR_EVAL` (editor-process evaluation, off by default); `--disable-eval` / `CONDUIT_DISABLE_EVAL` (drops `gd_game_eval`, `gd_editor_eval`, and project-defined tools together for restricted deployments); `--audit-log <path|off>`; and `--tool-groups` (a comma list to slim the tool surface, for example dropping networking and audio). Transport placement is environment-only: `CONDUIT_RUNTIME_DIR`, `CONDUIT_SOCK`, and `CONDUIT_TCP`, all of which both ends read so they agree on the endpoint. Every boolean variable is off when unset, empty, `0`, `false`, `no`, or `off`. The bridge is configured only through the activation mechanisms of section 6.3 and the transport variables above, and otherwise has no knobs; keeping configuration broker-side keeps the project clean and the bridge simple. `docs/environment.md` is the complete reference.
+**Configuration.** The broker parses its arguments with Commander, so every setting has a command-line option and a `CONDUIT_` environment variable, and the option wins. `--help` and `--version` print to stderr, never stdout, which carries the protocol. An unknown option is a startup error rather than a silent no-op. The options: `--project` / `CONDUIT_PROJECT` (required, resolved to an absolute path); `--runtime-dir`, `--sock`, and `--tcp` for transport placement, which both ends read so they agree on the endpoint; `--auto-install` / `CONDUIT_AUTO_INSTALL` and `--addon-source` / `CONDUIT_ADDON_SOURCE` (addon installation, above); `--godot` / `CONDUIT_GODOT` (engine binary path, an override for `gd_editor_launch` only, which otherwise resolves the binary from `PATH` and the per-platform install locations; attaching to a running editor never needs one); `--timeout-ms`, `--eval-timeout-ms`, and `--export-timeout-ms` (defaults per section 13); `--enable-pixel-tools` / `CONDUIT_ENABLE_PIXEL_TOOLS` (tier 3, off by default); `--enable-editor-eval` / `CONDUIT_ENABLE_EDITOR_EVAL` (editor-process evaluation, off by default); `--disable-eval` / `CONDUIT_DISABLE_EVAL` (drops `gd_game_eval`, `gd_editor_eval`, networking, and project-defined tools together for restricted deployments); `--audit-log <path|off>` and `--audit-max-bytes` (section 9, off unless a path is given); and `--tool-groups` (a comma list to slim the tool surface, for example `-net,-audio` to drop networking and audio, or `scene,runtime` to keep only those). Tool groups can only subtract from what the other flags already permit: naming the `eval` group never reopens `--disable-eval`, and a mandatory `core` group holding `gd_status`, `gd_ping`, and the session and addon tools is always registered, so a slimmed deployment stays diagnosable. Every boolean variable is off when unset, empty, `0`, `false`, `no`, or `off`, and boolean options with a `--no-` form override the variable in the other direction. The bridge is configured only through the activation mechanisms of section 6.3 and the transport variables above, and otherwise has no knobs; keeping configuration broker-side keeps the project clean and the bridge simple. `docs/environment.md` is the complete reference.
 
 **Export presets.** Release presets exclude the `addons/conduit/` library binaries through the preset's resource filters, and the bridge's release-build guard (section 6.3) backstops a preset mistake. Debug and QA presets may include the bridge deliberately, activated only with the explicit opt-in flag, which is how on-device agent-driven testing works without ever arming a release build.
 
@@ -671,7 +672,9 @@ Three walkthroughs ground the taxonomy in practice. Tool names are illustrative 
 **Broker (TypeScript, recommended).**
 - The official MCP TypeScript SDK.
 - `zod` for input schema definition and validation.
+- `commander` for command-line parsing (section 15). Added after the first draft: the broker's configuration surface outgrew a hand-rolled argv scan, which had no `--help`, no validation, and silently ignored an unknown flag.
 - Node's `net` for the local-socket client, or a named-pipe-aware client on Windows.
+- Nothing else. Zip reading, checksum verification, and the audit log are built on `node:zlib`, `node:crypto`, and `node:fs`, so the published package declares no dependencies at all; the three above are inlined by the bundler.
 
 **Tooling.**
 - Godot 4.4+ (4.4+ needed for some UID-related features; 4.x otherwise).

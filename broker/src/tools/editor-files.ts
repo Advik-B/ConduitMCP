@@ -6,10 +6,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { AWAIT_TIMEOUT_MS, makeEditorTool } from "../tool-helpers.ts";
+import { type Timeouts, makeEditorTool } from "../tool-helpers.ts";
 
-export function registerEditorFilesTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorFilesTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_file_move",
@@ -19,7 +19,7 @@ export function registerEditorFilesTools(server: McpServer, manager: BridgeManag
       to_path: z.string().describe("New res:// or user:// path for the file."),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   editorTool(
@@ -27,6 +27,6 @@ export function registerEditorFilesTools(server: McpServer, manager: BridgeManag
     "Delete a project file along with its .uid and .import sidecars, if present.",
     { path: z.string().describe("res:// or user:// path of the file to delete.") },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 }

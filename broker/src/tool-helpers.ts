@@ -38,17 +38,45 @@ export const instanceField = {
   instance: z.number().int().describe("Game instance pid; defaults to the most recent.").optional(),
 };
 
+/** The three configurable timeout budgets (--timeout-ms and friends). */
+export interface Timeouts {
+  default: number;
+  await: number;
+  export: number;
+}
+
+export const DEFAULT_TIMEOUTS: Timeouts = {
+  default: DEFAULT_TIMEOUT_MS,
+  await: AWAIT_TIMEOUT_MS,
+  export: EXPORT_TIMEOUT_MS,
+};
+
+/**
+ * Which budget a tool draws on. Naming the class instead of the number is what
+ * lets --timeout-ms and --eval-timeout-ms reach every tool: the call sites say
+ * what kind of call it is, and the resolved numbers arrive once, here.
+ */
+export type TimeoutClass = "default" | "await" | "export";
+
+export function resolveTimeout(timeouts: Timeouts, budget: TimeoutClass | number | undefined): number {
+  if (typeof budget === "number") {
+    return budget;
+  }
+  return timeouts[budget ?? "default"];
+}
+
 export type ToolRegistrar = (
   name: string,
   description: string,
   inputSchema: Record<string, z.ZodTypeAny>,
   annotations: Record<string, boolean>,
-  timeoutMs?: number,
+  timeout?: TimeoutClass | number,
 ) => void;
 
 /** Registers tools routed to the editor bridge (the single, persistent connection). */
-export function makeEditorTool(server: McpServer, manager: BridgeManager): ToolRegistrar {
-  return (name, description, inputSchema, annotations, timeoutMs = DEFAULT_TIMEOUT_MS) => {
+export function makeEditorTool(server: McpServer, manager: BridgeManager, timeouts: Timeouts = DEFAULT_TIMEOUTS): ToolRegistrar {
+  return (name, description, inputSchema, annotations, timeout) => {
+    const timeoutMs = resolveTimeout(timeouts, timeout);
     server.registerTool(name, { description, inputSchema, annotations }, async (args) => {
       try {
         const result = await manager.editorRequest(name, args as Record<string, unknown>, timeoutMs);
@@ -61,8 +89,9 @@ export function makeEditorTool(server: McpServer, manager: BridgeManager): ToolR
 }
 
 /** Registers tools routed to a game bridge instance; adds the shared `instance` field. */
-export function makeGameTool(server: McpServer, manager: BridgeManager): ToolRegistrar {
-  return (name, description, inputSchema, annotations, timeoutMs = DEFAULT_TIMEOUT_MS) => {
+export function makeGameTool(server: McpServer, manager: BridgeManager, timeouts: Timeouts = DEFAULT_TIMEOUTS): ToolRegistrar {
+  return (name, description, inputSchema, annotations, timeout) => {
+    const timeoutMs = resolveTimeout(timeouts, timeout);
     server.registerTool(
       name,
       { description, inputSchema: { ...inputSchema, ...instanceField }, annotations },

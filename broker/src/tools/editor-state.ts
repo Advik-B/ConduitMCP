@@ -3,10 +3,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { makeEditorTool } from "../tool-helpers.ts";
+import { type Timeouts, makeEditorTool } from "../tool-helpers.ts";
 
-export function registerEditorStateTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorStateTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_undo",

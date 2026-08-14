@@ -7,7 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { makeEditorTool } from "../tool-helpers.ts";
+import { type Timeouts, makeEditorTool } from "../tool-helpers.ts";
 
 const buttonField = z
   .enum(["left", "right", "middle"])
@@ -17,8 +17,8 @@ const buttonField = z
 const PIXEL_WARNING =
   "Tier-3 last-resort pixel input against the editor window; fragile to resolution, theme, and editor layout. Prefer semantic tools or gd_editor_ui; use gd_editor_window_info to compute coordinates.";
 
-export function registerEditorPixelTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorPixelTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_editor_window_info",

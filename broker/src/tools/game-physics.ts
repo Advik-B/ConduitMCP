@@ -7,10 +7,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { makeGameTool } from "../tool-helpers.ts";
+import { type Timeouts, makeGameTool } from "../tool-helpers.ts";
 
-export function registerGamePhysicsTools(server: McpServer, manager: BridgeManager): void {
-  const gameTool = makeGameTool(server, manager);
+export function registerGamePhysicsTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const gameTool = makeGameTool(server, manager, timeouts);
 
   gameTool(
     "gd_physics",

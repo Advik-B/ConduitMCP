@@ -20,9 +20,11 @@ import cargo from "../../Cargo.toml";
 const VERSION: string = cargo.workspace.package.version;
 
 import { type AddonDetection, detectAddon, installAddon } from "./addon.ts";
+import { AuditLog } from "./audit.ts";
 import { BridgeManager } from "./bridge-manager.ts";
+import { type CliOptions, applyTransportEnv, runCli } from "./cli.ts";
 import { type Endpoint, editorEndpoint, editorEndpointFromOverride, endpointKey } from "./endpoint.ts";
-import { envFlag } from "./env.ts";
+import { envFlag, envInt } from "./env.ts";
 import { EventRing } from "./events.ts";
 import { GodotResolver } from "./godot-locate.ts";
 import { registerClassDbTools } from "./tools/classdb.ts";
@@ -39,6 +41,7 @@ import { registerEditorSceneTools } from "./tools/editor-scene.ts";
 import { registerEditorScriptTools } from "./tools/editor-script.ts";
 import { registerEditorStateTools } from "./tools/editor-state.ts";
 import { registerEditorWiringTools } from "./tools/editor-wiring.ts";
+import { parseToolGroups, wrapServer } from "./tool-registry.ts";
 import { ProjectToolsRegistry, type ToolEntry } from "./tools/project-tools.ts";
 import { registerSessionTools } from "./tools/session.ts";
 import { registerGameAnimationTools } from "./tools/game-animation.ts";
@@ -52,6 +55,8 @@ import { registerGameWindowTools } from "./tools/game-window.ts";
 import {
   AWAIT_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
+  EXPORT_TIMEOUT_MS,
+  type Timeouts,
   instanceField,
   makeEditorTool,
   makeGameTool,
@@ -60,6 +65,7 @@ import {
 } from "./tool-helpers.ts";
 
 const GAME_CONNECT_TIMEOUT_MS = 20_000;
+const DEFAULT_AUDIT_MAX_BYTES = 16 * 1024 * 1024;
 
 function log(message: string): void {
   process.stderr.write(`conduit-broker: ${message}\n`);
@@ -75,39 +81,31 @@ interface Config {
   godot: GodotResolver;
   autoInstall: boolean;
   addonSource: string | null;
+  timeouts: Timeouts;
+  auditLog: string | null;
+  auditMaxBytes: number;
+  toolGroups: string | null;
 }
 
-/** Whether a boolean CLI flag is present in the process arguments. */
-function hasCliFlag(name: string): boolean {
-  return process.argv.slice(2).includes(name);
-}
-
-/** The value of a `--name value` or `--name=value` CLI argument, if present. */
-function cliValue(name: string): string | null {
-  const argv = process.argv.slice(2);
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === name) {
-      return argv[i + 1] ?? null;
-    }
-    if (arg?.startsWith(`${name}=`)) {
-      return arg.slice(name.length + 1);
-    }
-  }
-  return null;
-}
-
-function resolveConfig(): Config {
-  const runtimeDir = process.env.CONDUIT_RUNTIME_DIR || os.tmpdir();
-  // CLI flags take precedence over environment variables (whitepaper section 15).
-  const rawProjectPath = cliValue("--project") ?? process.env.CONDUIT_PROJECT ?? null;
+/**
+ * Turn parsed arguments into the broker's configuration. Command-line options
+ * take precedence over environment variables (whitepaper section 15), which is
+ * why every `??` chain below reads option first: an option is undefined when it
+ * was not passed, never a default. Booleans use `?? envFlag(...)` so an explicit
+ * `--no-x` still beats the variable.
+ *
+ * Exported for tests: this is the only place precedence is decided.
+ */
+export function resolveConfig(cli: CliOptions, env: NodeJS.ProcessEnv = process.env): Config {
+  const runtimeDir = env.CONDUIT_RUNTIME_DIR || os.tmpdir();
+  const rawProjectPath = cli.project ?? env.CONDUIT_PROJECT ?? null;
   // Resolve once, here. The addon installer writes files under this path and an
   // MCP client spawns the broker with an arbitrary cwd, so a relative --project
   // would otherwise land somewhere unpredictable. It also makes the derived hash
   // agree with the bridge, which builds its side from globalize_path("res://")
   // and is therefore always absolute.
   const projectPath = rawProjectPath ? path.resolve(rawProjectPath) : null;
-  const override = process.env.CONDUIT_SOCK;
+  const override = env.CONDUIT_SOCK;
   const resolvedEndpoint: Endpoint | null = override
     ? editorEndpointFromOverride(override)
     : projectPath
@@ -116,22 +114,28 @@ function resolveConfig(): Config {
   if (!resolvedEndpoint) {
     throw new Error("set --project, CONDUIT_PROJECT, or CONDUIT_SOCK so the broker can locate the editor bridge");
   }
-  const enablePixelTools = hasCliFlag("--enable-pixel-tools") || envFlag(process.env.CONDUIT_ENABLE_PIXEL_TOOLS);
-  const enableEditorEval = hasCliFlag("--enable-editor-eval") || envFlag(process.env.CONDUIT_ENABLE_EDITOR_EVAL);
-  const disableEval = hasCliFlag("--disable-eval") || envFlag(process.env.CONDUIT_DISABLE_EVAL);
-  const autoInstall = hasCliFlag("--auto-install") || envFlag(process.env.CONDUIT_AUTO_INSTALL);
-  const addonSource = cliValue("--addon-source") ?? process.env.CONDUIT_ADDON_SOURCE ?? null;
-  const godotBin = cliValue("--godot") ?? process.env.CONDUIT_GODOT ?? null;
+  const auditLog = cli.auditLog ?? env.CONDUIT_AUDIT_LOG ?? null;
   return {
     runtimeDir,
     projectPath,
     editorEndpoint: resolvedEndpoint,
-    enablePixelTools,
-    enableEditorEval,
-    disableEval,
-    godot: new GodotResolver(godotBin),
-    autoInstall,
-    addonSource,
+    enablePixelTools: cli.enablePixelTools ?? envFlag(env.CONDUIT_ENABLE_PIXEL_TOOLS),
+    enableEditorEval: cli.enableEditorEval ?? envFlag(env.CONDUIT_ENABLE_EDITOR_EVAL),
+    disableEval: cli.disableEval ?? envFlag(env.CONDUIT_DISABLE_EVAL),
+    godot: new GodotResolver(cli.godot ?? env.CONDUIT_GODOT ?? null),
+    autoInstall: cli.autoInstall ?? envFlag(env.CONDUIT_AUTO_INSTALL),
+    addonSource: cli.addonSource ?? env.CONDUIT_ADDON_SOURCE ?? null,
+    timeouts: {
+      default: cli.timeoutMs ?? envInt("CONDUIT_TIMEOUT_MS", env.CONDUIT_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS,
+      await: cli.evalTimeoutMs ?? envInt("CONDUIT_EVAL_TIMEOUT_MS", env.CONDUIT_EVAL_TIMEOUT_MS) ?? AWAIT_TIMEOUT_MS,
+      export: cli.exportTimeoutMs ?? envInt("CONDUIT_EXPORT_TIMEOUT_MS", env.CONDUIT_EXPORT_TIMEOUT_MS) ?? EXPORT_TIMEOUT_MS,
+    },
+    // "off" is the documented way to disable it from a config file that can set
+    // a variable but not unset one.
+    auditLog: auditLog && auditLog.toLowerCase() !== "off" ? path.resolve(auditLog) : null,
+    auditMaxBytes:
+      cli.auditMaxBytes ?? envInt("CONDUIT_AUDIT_MAX_BYTES", env.CONDUIT_AUDIT_MAX_BYTES) ?? DEFAULT_AUDIT_MAX_BYTES,
+    toolGroups: cli.toolGroups ?? env.CONDUIT_TOOL_GROUPS ?? null,
   };
 }
 
@@ -144,6 +148,7 @@ export interface ToolOptions {
   projectPath: string | null;
   runtimeDir: string;
   addonSource: string | null;
+  timeouts: Timeouts;
   // Extra fields merged into gd_status: engine resolution and addon install
   // state live outside the BridgeManager, which only knows about connections.
   extraStatus?: () => Record<string, unknown>;
@@ -151,8 +156,9 @@ export interface ToolOptions {
 }
 
 export function registerTools(server: McpServer, manager: BridgeManager, events: EventRing, options: ToolOptions): void {
-  const gameTool = makeGameTool(server, manager);
-  const editorTool = makeEditorTool(server, manager);
+  const timeouts = options.timeouts;
+  const gameTool = makeGameTool(server, manager, timeouts);
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_ping",
@@ -176,7 +182,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
         // against the instances known before the launch.
         const known = manager.knownGamePids();
         const playArgs = scene ? { scene } : {};
-        const playResult = (await manager.editorRequest("gd_play", playArgs, DEFAULT_TIMEOUT_MS)) as Record<string, unknown>;
+        const playResult = (await manager.editorRequest("gd_play", playArgs, options.timeouts.default)) as Record<string, unknown>;
         try {
           const instance = await manager.waitForGame(GAME_CONNECT_TIMEOUT_MS, known);
           return textResult({
@@ -276,7 +282,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
       "Evaluate a GDScript snippet in the running game and return the result. Supports await; the call resolves when the coroutine completes. Arbitrary code, so highest capability and highest risk.",
       { source: z.string().describe("GDScript to run; prefix with 'return' or include a return statement to yield a value.") },
       { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-      AWAIT_TIMEOUT_MS,
+      "await",
     );
   }
 
@@ -292,7 +298,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
       args: z.array(z.any()).describe("Arguments to emit.").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   gameTool(
@@ -344,7 +350,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     async (args) => {
       try {
         const { instance, ...rest } = args as Record<string, unknown> & { instance?: number };
-        const result = (await manager.gameRequest("gd_screenshot", rest, AWAIT_TIMEOUT_MS, instance)) as {
+        const result = (await manager.gameRequest("gd_screenshot", rest, options.timeouts.await, instance)) as {
           image_base64: string;
           format: string;
         };
@@ -389,7 +395,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     "Advance a paused game a precise number of frames, then restore the previous pause state.",
     { frames: z.number().int().min(1).describe("Number of frames to advance.") },
     { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   gameTool(
@@ -397,7 +403,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     "Wait a number of seconds of game time (accumulated from rendered-frame deltas), then return.",
     { seconds: z.number().positive().describe("Seconds of game time to wait.") },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   gameTool(
@@ -405,7 +411,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     "Wait a number of rendered frames, then return; completes via deferred resolution without blocking the game.",
     { frames: z.number().int().min(1).describe("Number of frames to wait.") },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   gameTool(
@@ -446,17 +452,17 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     async ({ cursor }) => textResult(events.since(cursor ?? 0)),
   );
 
-  registerGameAnimationTools(server, manager);
-  registerGamePhysicsTools(server, manager);
-  registerGameRenderTools(server, manager);
-  registerGameAudioTools(server, manager);
-  registerGameTilemapTools(server, manager);
-  registerGameWindowTools(server, manager);
-  registerGameTreeTools(server, manager);
+  registerGameAnimationTools(server, manager, timeouts);
+  registerGamePhysicsTools(server, manager, timeouts);
+  registerGameRenderTools(server, manager, timeouts);
+  registerGameAudioTools(server, manager, timeouts);
+  registerGameTilemapTools(server, manager, timeouts);
+  registerGameWindowTools(server, manager, timeouts);
+  registerGameTreeTools(server, manager, timeouts);
   // Networking reaches outside the machine on the agent's behalf: eval-class
   // (section 9), dropped together with gd_game_eval.
   if (!options.disableEval) {
-    registerGameNetTools(server, manager);
+    registerGameNetTools(server, manager, timeouts);
   }
 
   registerSessionTools(server, manager, {
@@ -468,23 +474,23 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     onInstallOutcome: options.onInstallOutcome,
   });
 
-  registerClassDbTools(server, manager);
-  registerEditorSceneTools(server, manager);
-  registerEditorWiringTools(server, manager);
-  registerEditorScriptTools(server, manager);
-  registerEditorResourceTools(server, manager);
-  registerEditorProjectTools(server, manager);
-  registerEditorStateTools(server, manager);
-  registerEditorAssetsTools(server, manager);
-  registerEditorFilesTools(server, manager);
-  registerEditorExportTools(server, manager);
-  registerEditorDebugTools(server, manager);
-  registerEditorCollabTools(server, manager);
+  registerClassDbTools(server, manager, timeouts);
+  registerEditorSceneTools(server, manager, timeouts);
+  registerEditorWiringTools(server, manager, timeouts);
+  registerEditorScriptTools(server, manager, timeouts);
+  registerEditorResourceTools(server, manager, timeouts);
+  registerEditorProjectTools(server, manager, timeouts);
+  registerEditorStateTools(server, manager, timeouts);
+  registerEditorAssetsTools(server, manager, timeouts);
+  registerEditorFilesTools(server, manager, timeouts);
+  registerEditorExportTools(server, manager, timeouts);
+  registerEditorDebugTools(server, manager, timeouts);
+  registerEditorCollabTools(server, manager, timeouts);
 
   // Tier-3 pixel fallback: registered only under an explicit opt-in (section 15),
   // so the default tool surface never exposes it.
   if (options.enablePixelTools) {
-    registerEditorPixelTools(server, manager);
+    registerEditorPixelTools(server, manager, timeouts);
   }
 
   // Editor-process evaluation: opt-in for the same reason (section 9); it runs
@@ -492,7 +498,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   // wins over the opt-in: enabling game eval never implies editor eval, and
   // disabling eval drops both (section 9).
   if (options.enableEditorEval && !options.disableEval) {
-    registerEditorEvalTools(server, manager);
+    registerEditorEvalTools(server, manager, timeouts);
   }
 }
 
@@ -541,8 +547,23 @@ async function autoInstall(config: Config, status: AddonStatus, events: EventRin
 }
 
 async function main(): Promise<void> {
-  const config = resolveConfig();
-  const server = new McpServer({ name: "conduit", version: VERSION });
+  // Parsing lives inside main, not at module scope: broker/tests/tools.test.ts
+  // imports registerTools from this file, and module-scope parsing would read
+  // the test runner's argv and exit.
+  const cli = runCli(process.argv, VERSION);
+  if (cli.kind === "exit") {
+    process.exit(cli.code);
+  }
+  // Before resolveConfig, which reads the variables these flags write.
+  applyTransportEnv(cli.options);
+  const config = resolveConfig(cli.options);
+
+  const groups = parseToolGroups(config.toolGroups);
+  const audit = config.auditLog ? new AuditLog(config.auditLog, config.auditMaxBytes, log) : null;
+  const baseServer = new McpServer({ name: "conduit", version: VERSION });
+  // Every registration path receives the wrapped server, so group filtering and
+  // audit timing apply uniformly, including to the dynamic gd_project_* tools.
+  const server = wrapServer(baseServer, { audit, groups });
 
   // Assigned after registerTools; the ring's notify closure runs only once
   // events start flowing, which is after main() finishes wiring.
@@ -550,7 +571,7 @@ async function main(): Promise<void> {
 
   const events = new EventRing(256, (event) => {
     try {
-      server.server.sendLoggingMessage({ level: "info", logger: "conduit", data: event });
+      baseServer.server.sendLoggingMessage({ level: "info", logger: "conduit", data: event });
     } catch {
       // The client may not have enabled logging, or the transport is not up yet.
     }
@@ -571,7 +592,7 @@ async function main(): Promise<void> {
     editorEndpoint: config.editorEndpoint,
     runtimeDir: config.runtimeDir,
     projectPath: config.projectPath,
-    timeoutMs: DEFAULT_TIMEOUT_MS,
+    timeoutMs: config.timeouts.default,
     events,
   });
 
@@ -620,6 +641,7 @@ async function main(): Promise<void> {
     projectPath: config.projectPath,
     runtimeDir: config.runtimeDir,
     addonSource: config.addonSource,
+    timeouts: config.timeouts,
     onInstallOutcome: ({ error, source }) => {
       addon.lastInstallError = error;
       addon.lastAttemptSource = source;
@@ -648,7 +670,7 @@ async function main(): Promise<void> {
   // Project-defined tools execute project code, so they are eval-class and
   // disabled together with gd_game_eval (section 9).
   if (!config.disableEval) {
-    projectTools = new ProjectToolsRegistry(server, manager);
+    projectTools = new ProjectToolsRegistry(server, manager, config.timeouts);
   }
   if (config.enablePixelTools) {
     log("pixel tools enabled (tier-3 editor fallback)");
@@ -659,9 +681,15 @@ async function main(): Promise<void> {
   if (config.disableEval) {
     log("eval-class tools disabled (gd_game_eval, gd_editor_eval, networking, project tools)");
   }
+  if (groups) {
+    log(`tool groups limited to: ${[...groups].sort().join(", ")}`);
+  }
+  if (audit?.enabled) {
+    log(`auditing tool calls to ${audit.path}`);
+  }
 
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await baseServer.connect(transport);
   log("MCP server ready on stdio");
 
   // After the handshake, so a slow or failing download never delays the client.

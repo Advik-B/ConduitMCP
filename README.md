@@ -118,19 +118,23 @@ Two alternatives to npm, if you want them:
 
 ## Flags and safety
 
-The broker's main configuration surface. Every variable Conduit reads, including the transport and engine-side ones, is documented in [docs/environment.md](docs/environment.md).
+Run `conduit-mcp-server --help` for the full option list, or read [docs/environment.md](docs/environment.md), which documents every variable Conduit reads including the transport and engine-side ones. Command-line options override the matching environment variable.
 
 | Flag | Env | Effect |
 | --- | --- | --- |
-| `--project <path>` | `CONDUIT_PROJECT` | The Godot project to attach to (required, or `CONDUIT_SOCK`). |
+| `--project <path>` | `CONDUIT_PROJECT` | The Godot project to attach to (required, or `--sock`). |
 | `--auto-install` | `CONDUIT_AUTO_INSTALL` | Install the matching addon into the project if it has none (off by default). |
 | `--addon-source <path>` | `CONDUIT_ADDON_SOURCE` | Install the addon from a local zip, directory, or URL instead of the GitHub release. |
 | `--godot <path>` | `CONDUIT_GODOT` | Override the engine binary for `gd_editor_launch`; found automatically otherwise. |
 | `--enable-pixel-tools` | `CONDUIT_ENABLE_PIXEL_TOOLS` | Enable coordinate-level editor mouse tools (off by default). |
 | `--enable-editor-eval` | `CONDUIT_ENABLE_EDITOR_EVAL` | Enable `gd_editor_eval`, GDScript in the editor process (off by default). |
 | `--disable-eval` | `CONDUIT_DISABLE_EVAL` | Drop the whole eval class: `gd_game_eval`, `gd_editor_eval`, networking tools, project-defined tools. |
+| `--tool-groups <list>` | `CONDUIT_TOOL_GROUPS` | Slim the tool surface: `scene,runtime` keeps those groups, `-net,-audio` drops them. |
+| `--audit-log <path>` | `CONDUIT_AUDIT_LOG` | Append a JSONL record of every tool call (off by default); `--audit-max-bytes` sets the rotation size. |
+| `--timeout-ms <n>` | `CONDUIT_TIMEOUT_MS` | Ordinary tool timeout, default 10000. `--eval-timeout-ms` (120000) covers eval and await, `--export-timeout-ms` (600000) covers export. |
+| `--runtime-dir`, `--sock`, `--tcp` | `CONDUIT_RUNTIME_DIR`, `CONDUIT_SOCK`, `CONDUIT_TCP` | Where the broker and bridge meet. Rarely needed; see the reference. |
 
-Boolean variables are off when unset, empty, `0`, `false`, `no`, or `off`, and on for anything else.
+Boolean variables are off when unset, empty, `0`, `false`, `no`, or `off`, and on for anything else. Boolean flags with a `--no-` form (`--no-auto-install`, `--no-tcp`) override the variable in the other direction.
 
 The safety properties are structural, not configuration:
 

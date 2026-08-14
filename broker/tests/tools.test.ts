@@ -5,6 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { BridgeManager } from "../src/bridge-manager.ts";
 import type { EventRing } from "../src/events.ts";
 import { GodotResolver } from "../src/godot-locate.ts";
+import { DEFAULT_TIMEOUTS } from "../src/tool-helpers.ts";
 import { registerTools } from "../src/index.ts";
 
 interface Registration {
@@ -41,6 +42,7 @@ function toolOptions(overrides: OptionOverrides = {}) {
     projectPath: null,
     runtimeDir: "",
     addonSource: null,
+    timeouts: DEFAULT_TIMEOUTS,
   };
 }
 

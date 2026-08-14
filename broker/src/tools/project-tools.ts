@@ -12,7 +12,7 @@ import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { DEFAULT_TIMEOUT_MS, instanceField, textResult, toToolError } from "../tool-helpers.ts";
+import { DEFAULT_TIMEOUTS, type Timeouts, instanceField, textResult, toToolError } from "../tool-helpers.ts";
 
 export interface ToolEntryArg {
   name: string;
@@ -83,11 +83,12 @@ export class ProjectToolsRegistry {
   constructor(
     private readonly server: McpServer,
     private readonly manager: BridgeManager,
+    private readonly timeouts: Timeouts = DEFAULT_TIMEOUTS,
   ) {}
 
   /** Pull the current tool list from the connected game and sync to it. */
   async refreshFromGame(): Promise<void> {
-    const result = (await this.manager.gameRequest("gd_project_tools_list", {}, DEFAULT_TIMEOUT_MS)) as {
+    const result = (await this.manager.gameRequest("gd_project_tools_list", {}, this.timeouts.default)) as {
       tools: ToolEntry[];
     };
     this.sync(result.tools ?? []);
@@ -138,7 +139,10 @@ export class ProjectToolsRegistry {
               const result = await this.manager.gameRequest(
                 "gd_project_call",
                 { method: entry.method, node_path: entry.node_path, args: rest },
-                DEFAULT_TIMEOUT_MS,
+                // The eval budget, not the ordinary one: a project tool runs
+                // arbitrary project code and may await, exactly like
+                // gd_game_eval and gd_editor_eval, which both get it.
+                this.timeouts.await,
                 instance,
               );
               return textResult(result);

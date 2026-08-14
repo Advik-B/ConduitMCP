@@ -7,10 +7,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { AWAIT_TIMEOUT_MS, makeEditorTool } from "../tool-helpers.ts";
+import { type Timeouts, makeEditorTool } from "../tool-helpers.ts";
 
-export function registerEditorDebugTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorDebugTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_debug",
@@ -36,6 +36,6 @@ export function registerEditorDebugTools(server: McpServer, manager: BridgeManag
       frame_limit: z.number().int().min(1).describe("stack: maximum frames to return.").optional(),
     },
     { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 }

@@ -7,10 +7,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { AWAIT_TIMEOUT_MS, makeEditorTool } from "../tool-helpers.ts";
+import { type Timeouts, makeEditorTool } from "../tool-helpers.ts";
 
-export function registerEditorEvalTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorEvalTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_editor_eval",
@@ -21,6 +21,6 @@ export function registerEditorEvalTools(server: McpServer, manager: BridgeManage
         .describe("GDScript to evaluate: an expression, or statements ending in a return. await is supported."),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 }

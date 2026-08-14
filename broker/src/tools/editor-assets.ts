@@ -6,10 +6,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { AWAIT_TIMEOUT_MS, makeEditorTool } from "../tool-helpers.ts";
+import { type Timeouts, makeEditorTool } from "../tool-helpers.ts";
 
-export function registerEditorAssetsTools(server: McpServer, manager: BridgeManager): void {
-  const editorTool = makeEditorTool(server, manager);
+export function registerEditorAssetsTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const editorTool = makeEditorTool(server, manager, timeouts);
 
   editorTool(
     "gd_asset_add",
@@ -19,7 +19,7 @@ export function registerEditorAssetsTools(server: McpServer, manager: BridgeMana
       data_base64: z.string().describe("Base64-encoded file contents."),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   editorTool(
@@ -27,6 +27,6 @@ export function registerEditorAssetsTools(server: McpServer, manager: BridgeMana
     "Reimport an asset after its import settings changed, waiting for the import pipeline to settle.",
     { path: z.string().describe("res:// path to the asset to reimport.") },
     { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 }

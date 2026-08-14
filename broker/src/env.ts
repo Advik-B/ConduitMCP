@@ -14,3 +14,19 @@ export function envFlag(value: string | undefined): boolean {
   }
   return !OFF_VALUES.has(value.trim().toLowerCase());
 }
+
+/**
+ * A positive integer environment variable. Throws rather than falling back on a
+ * malformed value: a timeout that silently reverts to its default because
+ * someone wrote "10s" is worse than a startup error naming the variable.
+ */
+export function envInt(name: string, value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} expects a positive integer, got "${value}"`);
+  }
+  return parsed;
+}

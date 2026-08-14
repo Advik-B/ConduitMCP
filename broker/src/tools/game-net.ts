@@ -7,10 +7,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { BridgeManager } from "../bridge-manager.ts";
-import { AWAIT_TIMEOUT_MS, makeGameTool } from "../tool-helpers.ts";
+import { type Timeouts, makeGameTool } from "../tool-helpers.ts";
 
-export function registerGameNetTools(server: McpServer, manager: BridgeManager): void {
-  const gameTool = makeGameTool(server, manager);
+export function registerGameNetTools(server: McpServer, manager: BridgeManager, timeouts?: Timeouts): void {
+  const gameTool = makeGameTool(server, manager, timeouts);
 
   gameTool(
     "gd_http_request",
@@ -27,7 +27,7 @@ export function registerGameNetTools(server: McpServer, manager: BridgeManager):
       max_body_bytes: z.number().int().min(1).describe("Response body byte cap (default 65536).").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   gameTool(
@@ -41,7 +41,7 @@ export function registerGameNetTools(server: McpServer, manager: BridgeManager):
       timeout_s: z.number().min(0).max(60).describe("How long recv waits for a message (default 10).").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    AWAIT_TIMEOUT_MS,
+    "await",
   );
 
   gameTool(

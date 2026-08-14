@@ -734,3 +734,82 @@ rule: unset, empty, `0`, `false`, `no`, and `off` are off. Keeping the two
 implementations in agreement is load-bearing for `CONDUIT_TCP`, which both ends
 read to decide the transport; disagreeing would leave them binding and dialling
 different endpoints.
+
+## Commander CLI, tool groups, and the audit log
+
+### Commander does not reject a flag swallowed as an option value
+
+`--project --tcp` parses to `project: "--tcp"` under Commander 15, the same
+defect the hand-rolled parser had. Commander allows it deliberately, since a
+value may legitimately begin with a dash. `cli.ts` adds a pre-parse pass that
+rejects the case where a value-taking option is followed by a token that is
+itself a declared long option; a value starting with `--` that is not an option
+name still passes through.
+
+### Commander's option defaults would silently kill every environment variable
+
+`program.opts()` cannot distinguish a Commander default from a passed argument,
+so any option carrying a `defaultValue` would always look "passed" and its
+`CONDUIT_` variable would never be consulted. No option in `cli.ts` has one, and
+precedence lives entirely in `resolveConfig`. Commander's own `.env()` support is
+also unused: it resolves the variable into the same opts object, hiding the
+precedence, and its truthiness rule for booleans contradicts `envFlag`, where
+`CONDUIT_X=0` means off.
+
+Booleans are three-state for the same reason: undefined when absent, so
+`opts.x ?? envFlag(env.CONDUIT_X)` still consults the variable. Declaring the
+positive option before its `--no-` form is what avoids Commander forcing a
+`true` default, which it does only when a `--no-x` is declared alone. Verified
+against Commander 15.0.0.
+
+### argv shape is the same for bun, node, and a compiled binary
+
+`program.parse(process.argv)` with the default `from: "node"` skips the first two
+entries. That is correct for `bun broker/src/index.ts`, for the bundled
+`node dist/npm/index.js`, and for a `bun build --compile` executable, which
+repeats its own path in `argv[1]`. Confirmed by running a compiled binary with
+`--project`, `--version`, and `--help`.
+
+### Help and version output has to be routed away from stdout
+
+Commander writes help and errors to stdout by default, and stdout is the MCP
+transport. `program.configureOutput` sends both to stderr; the acceptance is that
+`node dist/npm/index.js --help` produces zero bytes on stdout.
+
+### There is no single choke point for tool calls, so the server is proxied
+
+The `makeEditorTool`/`makeGameTool` factories cover about 71 of the 84 default
+tools; thirteen call `server.registerTool` directly, including `gd_screenshot`
+and `gd_editor_screenshot`, which are exactly the large-payload case the audit
+log has to elide. What every path does share is the `McpServer` instance, so
+`wrapServer` returns a `Proxy` intercepting `registerTool`. That also keeps the
+24 tools registered inline in `index.ts` groupable without extracting them into
+modules first, because group membership is a table keyed by tool name rather than
+a property of the registration site.
+
+Tools absent from the table pass through unfiltered but still audited. That is
+the dynamic `gd_project_*` surface, whose names come from project code at
+runtime; it is gated as a whole by `--disable-eval` instead.
+
+### Audit elision must be per field, not per record
+
+Thresholding the serialized record would drop the structured error code along
+with the payload it was meant to trim, which is the part worth keeping. The
+writer walks `content[]` and replaces oversized `data`/`text` values in place,
+keeping `type` and the byte count.
+
+### The audit log defaults off, diverging from section 9
+
+Section 9 phrases the audit log as something the broker writes and that can be
+disabled. Conduit inverts the default: writing a file into a user's filesystem is
+the same class of act as installing the addon, and `CLAUDE.md` forbids weakening
+defaults for convenience. `--audit-log <path>` enables it, `off` disables it
+explicitly for configs that can set a variable but not unset one.
+
+### gd_asset_add's import check is timing-flaky
+
+`asset_add_imports` in the phase 3 runner asserts that Godot has produced a
+`.import` sidecar by the time `gd_asset_add` returns. It fails intermittently and
+passes on a re-run: the editor's filesystem rescan is asynchronous and the tool's
+wait does not always cover it. Unrelated to the tool's own correctness, but worth
+knowing before treating a red phase 3 as a regression.

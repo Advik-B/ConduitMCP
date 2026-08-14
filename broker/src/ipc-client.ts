@@ -65,6 +65,9 @@ export interface BridgeClientOptions {
   defaultTimeoutMs?: number;
 }
 
+// A last-resort fallback for a client constructed without options, which only
+// tests do. The running broker always passes the configured value
+// (--timeout-ms) down through BridgeManager, so this is not the live default.
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
 export class BridgeClient {
