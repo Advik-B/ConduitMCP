@@ -118,3 +118,43 @@ jobs:
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "Conduit $GITHUB_REF_NAME" dist/conduit-addon-*.zip dist/conduit-mcp-server-* dist/SHA256SUMS.txt
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # Runs after assemble because the published README points users at the addon
+  # zip on the GitHub release; publishing first would ship a package referencing
+  # assets that do not exist yet. npm versions are immutable, so this is the one
+  # irreversible step in the workflow and it is gated on a tag.
+  publish-npm:
+    needs: assemble
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    # Least privilege: this job carries the npm token and only needs to read the
+    # tree, unlike the contents: write the rest of the workflow inherits.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+      - run: bun run pack:npm
+      - name: Check whether this version is already on npm
+        id: published
+        run: |
+          version=$(bun --print 'require("./dist/npm/package.json").version')
+          name=$(bun --print 'require("./dist/npm/package.json").name')
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/$name/$version")
+          if [ "$code" = "200" ]; then
+            echo "already-published=true" >> "$GITHUB_OUTPUT"
+            echo "$name@$version is already on npm; skipping publish"
+          elif [ "$code" = "404" ]; then
+            echo "already-published=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "unexpected registry response $code for $name@$version"
+            exit 1
+          fi
+      - name: Publish
+        if: steps.published.outputs.already-published == 'false'
+        run: cd dist/npm && bun publish
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
