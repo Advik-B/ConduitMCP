@@ -58,7 +58,7 @@ Nothing listens on the network, and the bridge refuses to activate in release bu
 
 - Godot 4.4 or newer (developed and tested against 4.7.1).
 - Prebuilt bridge platforms: Windows x64, Linux x64 (glibc 2.35+), macOS universal (Intel and Apple silicon).
-- The broker binary is standalone; nothing else to install. Running from source instead needs [Bun](https://bun.sh) 1.2+.
+- Node.js 20+ (tested on 22) or [Bun](https://bun.sh) 1.2+, to run the broker from npm. A standalone binary that needs neither is on [Releases](https://github.com/Advik-B/ConduitMCP/releases).
 - Any MCP client: Claude Code, Claude Desktop, or anything else that speaks MCP over stdio.
 
 ## Install the addon
@@ -71,16 +71,16 @@ On macOS, clear the quarantine attribute after extracting: `xattr -dr com.apple.
 
 ## Run the broker
 
-Download the broker binary for your platform from [Releases](https://github.com/Advik-B/ConduitMCP/releases) (`conduit-mcp-server-windows-x64.exe`, `conduit-mcp-server-linux-x64`, `conduit-mcp-server-darwin-arm64`, or `conduit-mcp-server-darwin-x64`). On Linux and macOS make it executable (`chmod +x`), and on macOS clear quarantine (`xattr -d com.apple.quarantine <binary>`).
+The broker is on npm as [`conduit-mcp-server`](https://www.npmjs.com/package/conduit-mcp-server). There is nothing to install ahead of time: point your MCP client at it and the package is fetched on first run.
 
-Then register it with your MCP client. Claude Code (`.mcp.json` in your project, or `claude mcp add`):
+Claude Code (`.mcp.json` in your project, or `claude mcp add`):
 
 ```json
 {
   "mcpServers": {
     "godot": {
-      "command": "/absolute/path/to/conduit-mcp-server",
-      "args": ["--project", "/absolute/path/to/your-godot-project"],
+      "command": "npx",
+      "args": ["-y", "conduit-mcp-server", "--project", "/absolute/path/to/your-godot-project"],
       "env": {
         "CONDUIT_ENABLE": "1",
         "CONDUIT_GODOT": "/absolute/path/to/godot"
@@ -89,6 +89,8 @@ Then register it with your MCP client. Claude Code (`.mcp.json` in your project,
   }
 }
 ```
+
+On Bun, use `bunx` as the `command` and drop the `-y`. Pin a version with `conduit-mcp-server@X.Y.Z` if you would rather not track the latest.
 
 Claude Desktop uses the same entry under `mcpServers` in `claude_desktop_config.json`.
 
@@ -99,7 +101,12 @@ The two environment variables are optional but recommended:
 
 Editor-side tools need no opt-in: the broker finds any running editor for the configured project automatically.
 
-Running from a clone instead of the binary: `bun install --frozen-lockfile`, then use `bun /path/to/repo/broker/src/index.ts` as the `command` with the same args. The broker is not published to npm yet.
+Keep the broker and the addon on the same version. The npm package and the addon zip are released together from the same tag, so an `X.Y.Z` addon expects an `X.Y.Z` broker; pinning the version in `args` is the simplest way to keep them in step.
+
+Two alternatives to npm, if you want them:
+
+- **Standalone binary**, for a machine with neither Node nor Bun. Download it for your platform from [Releases](https://github.com/Advik-B/ConduitMCP/releases) (`conduit-mcp-server-windows-x64.exe`, `conduit-mcp-server-linux-x64`, `conduit-mcp-server-darwin-arm64`, or `conduit-mcp-server-darwin-x64`), `chmod +x` it on Linux and macOS, clear quarantine on macOS (`xattr -d com.apple.quarantine <binary>`), and use its absolute path as the `command` with `args: ["--project", "..."]`.
+- **From a clone**, for working on Conduit itself: `bun install --frozen-lockfile`, then `bun /path/to/repo/broker/src/index.ts` as the `command` with the same args.
 
 ## Flags and safety
 

@@ -68,12 +68,15 @@ configuring this server:
 On macOS, clear quarantine after extracting:
 \`xattr -dr com.apple.quarantine addons/conduit\`.
 
-The addon version should match this package's version.
+Install the \`v${version}\` addon to match this package. The addon zip and this
+package are released together from the same tag, and a mismatched pair is the
+first thing to suspect if tools are missing or a call fails to route.
 
 ## Configure your MCP client
 
-Claude Code (\`.mcp.json\` in your project) and Claude Desktop
-(\`claude_desktop_config.json\`) use the same entry:
+Nothing to install ahead of time: point your MCP client at the package and it is
+fetched on first run. Claude Code (\`.mcp.json\` in your project) and Claude
+Desktop (\`claude_desktop_config.json\`) use the same entry:
 
 \`\`\`json
 {
@@ -90,6 +93,9 @@ Claude Code (\`.mcp.json\` in your project) and Claude Desktop
 }
 \`\`\`
 
+On Bun, use \`bunx\` as the \`command\` and drop the \`-y\`. To stay on a known pair
+rather than tracking the latest, pin the version: \`${PACKAGE_NAME}@${version}\`.
+
 Both environment variables are optional. \`CONDUIT_ENABLE=1\` lets the game-side
 bridge activate in games launched from an editor the broker started;
 \`CONDUIT_GODOT\` tells the broker which engine binary to use for
@@ -105,8 +111,9 @@ configured project automatically.
 - Prebuilt bridge platforms: Windows x64, Linux x64 (glibc 2.35+), macOS
   universal.
 
-A standalone binary that needs no Node or Bun is also published on
-[Releases](${REPO_URL}/releases).
+For a machine with neither Node nor Bun, a standalone binary of this same server
+is published on [Releases](${REPO_URL}/releases); use its absolute path as the
+\`command\` instead.
 
 ## Flags
 
