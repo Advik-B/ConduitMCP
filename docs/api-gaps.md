@@ -663,3 +663,74 @@ the promise rejection awaited in a try/catch; the standalone runtime handles
 the same code correctly (every eval proves it). The bridge-manager unit test
 for `ensureEditorConnected` therefore probes a refused loopback TCP connect,
 which is delivered normally on every platform.
+
+## Addon auto-install and engine discovery
+
+Post-v0.3.1 work, outside the nine numbered phases: the broker installs the
+addon into a project that lacks one, and resolves the Godot binary itself.
+
+### Endpoint enumeration cannot identify the project behind an endpoint
+
+`short_hash` is one-way, so a discovered `conduit-editor-<hash>` cannot be
+mapped back to a project path without connecting and reading the hello frame.
+Connecting is not free: on Windows a bridge pipe serves one client at a time
+(see the named-pipe section above), so probing an editor another broker owns
+would break that broker's connection. `listEditorTokens` therefore exists only
+to *count* what is advertised, and `BridgeManager.editorHint` turns that count
+into the three cases a user actually hits: our endpoint present but not
+accepting (starting up, or already held), nothing advertised at all (no editor,
+or no addon installed), and endpoints present but none ours (the wrong
+`--project`). Nothing connects to what the scan returns.
+
+### CONDUIT_TCP has nothing to enumerate
+
+Under the loopback TCP fallback the endpoint is a hash-derived port with no
+filesystem or namespace presence, so `listTokens` returns empty. An empty result
+there means "cannot tell", not "none running", and the hint says so rather than
+reporting a false negative. Game discovery has the same blind spot: under
+`CONDUIT_TCP` the broker cannot find a game it did not launch, because there is
+no game-endpoint namespace to scan.
+
+### Stale Unix game sockets are retried forever without backoff
+
+A game killed with SIGKILL never runs its `Listener::stop`, so its `.sock` file
+survives in the runtime directory. `listGameTokens` keeps returning it and
+`tryConnectGame` kept retrying every poll for the broker's lifetime, one stderr
+line each time. Connection attempts now back off geometrically to a 30 s cap and
+stop logging once capped. The file is deliberately not unlinked: the broker
+cannot distinguish a dead owner from a live process it merely cannot reach yet,
+and deleting a live bridge's socket would strand it.
+
+### The distributed addon layout differs from the scaffold layout
+
+`packaging/conduit.gdextension` maps libraries to
+`res://addons/conduit/bin/<lib>`, while `gd_project_scaffold` generates a flat
+manifest at `res://addons/conduit/<lib>` with only the host platform's keys,
+because it copies exactly one locally built library. The installer follows the
+distributed layout, since that is what the release zip contains. The divergence
+is intentional but easy to trip over when changing either one.
+
+### Compress-Archive produces forward-slash entry names
+
+The zip reader normalises `\` to `/` in entry names before the traversal check,
+because a writer that emitted backslashes would otherwise turn a whole path into
+one filename and defeat the check. PowerShell's `Compress-Archive`, which
+`scripts/package-addon.ts` uses on Windows, was verified to emit forward slashes
+and deflate-compressed entries with no directory records; the normalisation
+stays as a guard, not a workaround for an observed bug.
+
+### Godot holds the loaded library after the process is killed
+
+On Windows the editor process retains a handle on `conduit.dll` briefly after
+`killTree`, so removing the temporary project directory immediately afterwards
+fails with EACCES. The addon eval treats that cleanup as best-effort rather than
+racing the OS.
+
+### Boolean environment variables are parsed, not merely tested for presence
+
+Both ends previously treated any non-empty value as on, so `CONDUIT_ENABLE=0`
+enabled the bridge. `broker/src/env.ts` and `bridge/src/env.rs` now share one
+rule: unset, empty, `0`, `false`, `no`, and `off` are off. Keeping the two
+implementations in agreement is load-bearing for `CONDUIT_TCP`, which both ends
+read to decide the transport; disagreeing would leave them binding and dialling
+different endpoints.

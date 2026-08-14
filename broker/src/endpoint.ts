@@ -7,6 +7,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { envFlag } from "./env.ts";
 import { canonicalProjectKey, shortHash } from "./framing.ts";
 
 // A connectable endpoint: a Unix socket path or Windows pipe path (string), or a
@@ -19,8 +20,10 @@ const PIPE_DIR = "\\\\.\\pipe\\";
 
 const isWindows = process.platform === "win32";
 
+// Must agree with the Rust `tcp_fallback`: both ends derive their endpoint from
+// this, so a disagreement leaves them on different transports.
 export function tcpEnabled(): boolean {
-  return !!process.env.CONDUIT_TCP;
+  return envFlag(process.env.CONDUIT_TCP);
 }
 
 /** A stable string key for an endpoint, for dedup/tracking. */
@@ -70,30 +73,56 @@ export function gameEndpointFromToken(runtimeDir: string, token: string): Endpoi
   return isWindows ? `${PIPE_DIR}${token}` : join(runtimeDir, `${token}.sock`);
 }
 
+/** Directory listing, injectable so both platform branches are unit testable. */
+export type ReadDir = (dir: string) => string[];
+
 /**
- * Discover the bare game tokens currently advertised, scoped to a project hash
- * when known. On Unix the tokens are `.sock` files in the runtime directory; on
- * Windows they are pipe names enumerated from the pipe namespace. The pid-bearing
- * suffix means one project can have several tokens (several game instances).
+ * Bare tokens currently advertised under a prefix. On Unix these are `.sock`
+ * files in the runtime directory; on Windows they are pipe names enumerated
+ * from the pipe namespace.
+ *
+ * Under CONDUIT_TCP there is nothing to enumerate: the endpoint is a
+ * hash-derived host/port pair with no filesystem or namespace presence, so this
+ * returns empty and callers must say so rather than report "none running".
  */
-export function listGameTokens(runtimeDir: string, hash?: string): string[] {
-  const prefix = hash ? `conduit-game-${hash}-` : "conduit-game-";
+export function listTokens(runtimeDir: string, prefix: string, readDir: ReadDir = readdirSync): string[] {
+  if (tcpEnabled()) {
+    return [];
+  }
   if (isWindows) {
-    let names: string[];
     try {
-      names = readdirSync(PIPE_DIR);
+      return readDir(PIPE_DIR).filter((name) => name.startsWith(prefix));
     } catch {
       return [];
     }
-    return names.filter((name) => name.startsWith(prefix));
   }
   let entries: string[];
   try {
-    entries = readdirSync(runtimeDir);
+    entries = readDir(runtimeDir);
   } catch {
     return [];
   }
   return entries
     .filter((name) => name.startsWith(prefix) && name.endsWith(".sock"))
     .map((name) => name.slice(0, -".sock".length));
+}
+
+/**
+ * Discover the bare game tokens currently advertised, scoped to a project hash
+ * when known. The pid-bearing suffix means one project can have several tokens
+ * (several game instances).
+ */
+export function listGameTokens(runtimeDir: string, hash?: string, readDir?: ReadDir): string[] {
+  return listTokens(runtimeDir, hash ? `conduit-game-${hash}-` : "conduit-game-", readDir);
+}
+
+/**
+ * Discover the editor tokens currently advertised. Used only to explain why the
+ * derived editor endpoint is not answering: an editor running for a different
+ * project is the common cause and is worth naming. Never connect to what this
+ * returns. A bridge pipe serves one client at a time on Windows
+ * (docs/api-gaps.md), so probing another broker's editor would break it.
+ */
+export function listEditorTokens(runtimeDir: string, readDir?: ReadDir): string[] {
+  return listTokens(runtimeDir, "conduit-editor-", readDir);
 }

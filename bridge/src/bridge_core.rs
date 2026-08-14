@@ -151,7 +151,7 @@ fn current_activation_context(role: Role) -> ActivationContext {
         let arg = arg.to_string();
         arg == "--conduit" || arg == "conduit"
     });
-    let env_opt_in = std::env::var("CONDUIT_ENABLE").map(|value| !value.is_empty()).unwrap_or(false);
+    let env_opt_in = crate::env::env_flag("CONDUIT_ENABLE");
 
     // The editor personality only ever runs in the editor process; the game
     // personality only runs in a game process. The engine hint is authoritative

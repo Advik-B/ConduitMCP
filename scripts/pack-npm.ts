@@ -54,8 +54,15 @@ control of the Godot editor and the running game.
 ## This package is one half of Conduit
 
 The server alone does nothing. It connects over local IPC to a Rust GDExtension
-that must be installed into your Godot project first. Install the addon before
-configuring this server:
+that has to live in your Godot project. Set \`CONDUIT_AUTO_INSTALL=1\` in the
+config below and the server installs it for you: pointed at a Godot project with
+no addon, it downloads the \`v${version}\` addon matching this package, writes it
+to \`addons/conduit/\`, and registers the \`ConduitRuntime\` autoload in
+\`project.godot\` (backing that file up first). Then open the project in Godot so
+the extension loads. The agent can also run it on demand with
+\`gd_addon_install\`, and \`gd_addon_status\` reports what is installed.
+
+To install it yourself instead:
 
 1. Download \`conduit-addon-v${version}.zip\` from
    [Releases](${REPO_URL}/releases) and extract it into your project root, so the
@@ -65,12 +72,14 @@ configuring this server:
    Project Settings, Globals, Autoload, add
    \`res://addons/conduit/conduit_runtime.tscn\` named \`ConduitRuntime\`.
 
-On macOS, clear quarantine after extracting:
-\`xattr -dr com.apple.quarantine addons/conduit\`.
+On macOS, a hand-extracted zip is quarantined; clear it with
+\`xattr -dr com.apple.quarantine addons/conduit\`. Files the server writes itself
+are not quarantined.
 
-Install the \`v${version}\` addon to match this package. The addon zip and this
-package are released together from the same tag, and a mismatched pair is the
-first thing to suspect if tools are missing or a call fails to route.
+Either way, keep the addon on \`v${version}\` to match this package. The addon zip
+and this package are released together from the same tag, and a mismatched pair
+is the first thing to suspect if tools are missing or a call fails to route;
+\`gd_status\` reports the pair as \`stale\` when they disagree.
 
 ## Configure your MCP client
 
@@ -85,8 +94,8 @@ Desktop (\`claude_desktop_config.json\`) use the same entry:
       "command": "npx",
       "args": ["-y", "${PACKAGE_NAME}", "--project", "/absolute/path/to/your-godot-project"],
       "env": {
-        "CONDUIT_ENABLE": "1",
-        "CONDUIT_GODOT": "/absolute/path/to/godot"
+        "CONDUIT_AUTO_INSTALL": "1",
+        "CONDUIT_ENABLE": "1"
       }
     }
   }
@@ -96,10 +105,14 @@ Desktop (\`claude_desktop_config.json\`) use the same entry:
 On Bun, use \`bunx\` as the \`command\` and drop the \`-y\`. To stay on a known pair
 rather than tracking the latest, pin the version: \`${PACKAGE_NAME}@${version}\`.
 
-Both environment variables are optional. \`CONDUIT_ENABLE=1\` lets the game-side
-bridge activate in games launched from an editor the broker started;
-\`CONDUIT_GODOT\` tells the broker which engine binary to use for
-\`gd_editor_launch\` and \`gd_project_scaffold\`.
+The project path is all the server needs; both environment variables are
+optional. \`CONDUIT_AUTO_INSTALL=1\` installs the addon as described above and
+does nothing once it is current. \`CONDUIT_ENABLE=1\` lets the game-side bridge
+activate in games launched from an editor the broker started.
+
+You do not need to tell Conduit where Godot is. Attaching to an editor uses a
+local endpoint, never an engine binary, and \`gd_editor_launch\` finds the binary
+on \`PATH\` and in the usual install locations by itself.
 
 Editor-side tools need no opt-in: the broker finds any running editor for the
 configured project automatically.
@@ -120,11 +133,18 @@ is published on [Releases](${REPO_URL}/releases); use its absolute path as the
 | Flag | Env | Effect |
 | --- | --- | --- |
 | \`--project <path>\` | \`CONDUIT_PROJECT\` | The Godot project to attach to (required, or \`CONDUIT_SOCK\`). |
-| \`--godot <path>\` | \`CONDUIT_GODOT\` | Engine binary for \`gd_editor_launch\` and \`gd_project_scaffold\`. |
+| \`--auto-install\` | \`CONDUIT_AUTO_INSTALL\` | Install the matching addon into the project if it has none (off by default). |
+| \`--addon-source <path>\` | \`CONDUIT_ADDON_SOURCE\` | Install the addon from a local zip, directory, or URL instead of the release. |
+| \`--godot <path>\` | \`CONDUIT_GODOT\` | Override the engine binary for \`gd_editor_launch\`; found automatically otherwise. |
 | \`--enable-pixel-tools\` | \`CONDUIT_ENABLE_PIXEL_TOOLS\` | Enable coordinate-level editor mouse tools (off by default). |
 | \`--enable-editor-eval\` | \`CONDUIT_ENABLE_EDITOR_EVAL\` | Enable \`gd_editor_eval\` (off by default). |
 | \`--disable-eval\` | \`CONDUIT_DISABLE_EVAL\` | Drop the whole eval class of tools. |
 
+Boolean variables are off when unset, empty, \`0\`, \`false\`, \`no\`, or \`off\`, and
+on for anything else.
+
+Every variable Conduit reads, including the transport and engine-side ones, is
+documented in [docs/environment.md](${REPO_URL}/blob/master/docs/environment.md).
 Full documentation, including the safety model and the tool reference, is in the
 [repository](${REPO_URL}).
 

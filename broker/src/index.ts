@@ -7,6 +7,7 @@
 // logging goes to stderr (whitepaper section 7.1).
 
 import os from "node:os";
+import path from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -18,9 +19,12 @@ import cargo from "../../Cargo.toml";
 
 const VERSION: string = cargo.workspace.package.version;
 
+import { type AddonDetection, detectAddon, installAddon } from "./addon.ts";
 import { BridgeManager } from "./bridge-manager.ts";
 import { type Endpoint, editorEndpoint, editorEndpointFromOverride, endpointKey } from "./endpoint.ts";
+import { envFlag } from "./env.ts";
 import { EventRing } from "./events.ts";
+import { GodotResolver } from "./godot-locate.ts";
 import { registerClassDbTools } from "./tools/classdb.ts";
 import { registerEditorAssetsTools } from "./tools/editor-assets.ts";
 import { registerEditorCollabTools } from "./tools/editor-collab.ts";
@@ -68,7 +72,9 @@ interface Config {
   enablePixelTools: boolean;
   enableEditorEval: boolean;
   disableEval: boolean;
-  godotBin: string | null;
+  godot: GodotResolver;
+  autoInstall: boolean;
+  addonSource: string | null;
 }
 
 /** Whether a boolean CLI flag is present in the process arguments. */
@@ -94,7 +100,13 @@ function cliValue(name: string): string | null {
 function resolveConfig(): Config {
   const runtimeDir = process.env.CONDUIT_RUNTIME_DIR || os.tmpdir();
   // CLI flags take precedence over environment variables (whitepaper section 15).
-  const projectPath = cliValue("--project") ?? process.env.CONDUIT_PROJECT ?? null;
+  const rawProjectPath = cliValue("--project") ?? process.env.CONDUIT_PROJECT ?? null;
+  // Resolve once, here. The addon installer writes files under this path and an
+  // MCP client spawns the broker with an arbitrary cwd, so a relative --project
+  // would otherwise land somewhere unpredictable. It also makes the derived hash
+  // agree with the bridge, which builds its side from globalize_path("res://")
+  // and is therefore always absolute.
+  const projectPath = rawProjectPath ? path.resolve(rawProjectPath) : null;
   const override = process.env.CONDUIT_SOCK;
   const resolvedEndpoint: Endpoint | null = override
     ? editorEndpointFromOverride(override)
@@ -104,9 +116,11 @@ function resolveConfig(): Config {
   if (!resolvedEndpoint) {
     throw new Error("set --project, CONDUIT_PROJECT, or CONDUIT_SOCK so the broker can locate the editor bridge");
   }
-  const enablePixelTools = hasCliFlag("--enable-pixel-tools") || !!process.env.CONDUIT_ENABLE_PIXEL_TOOLS;
-  const enableEditorEval = hasCliFlag("--enable-editor-eval") || !!process.env.CONDUIT_ENABLE_EDITOR_EVAL;
-  const disableEval = hasCliFlag("--disable-eval") || !!process.env.CONDUIT_DISABLE_EVAL;
+  const enablePixelTools = hasCliFlag("--enable-pixel-tools") || envFlag(process.env.CONDUIT_ENABLE_PIXEL_TOOLS);
+  const enableEditorEval = hasCliFlag("--enable-editor-eval") || envFlag(process.env.CONDUIT_ENABLE_EDITOR_EVAL);
+  const disableEval = hasCliFlag("--disable-eval") || envFlag(process.env.CONDUIT_DISABLE_EVAL);
+  const autoInstall = hasCliFlag("--auto-install") || envFlag(process.env.CONDUIT_AUTO_INSTALL);
+  const addonSource = cliValue("--addon-source") ?? process.env.CONDUIT_ADDON_SOURCE ?? null;
   const godotBin = cliValue("--godot") ?? process.env.CONDUIT_GODOT ?? null;
   return {
     runtimeDir,
@@ -115,7 +129,9 @@ function resolveConfig(): Config {
     enablePixelTools,
     enableEditorEval,
     disableEval,
-    godotBin,
+    godot: new GodotResolver(godotBin),
+    autoInstall,
+    addonSource,
   };
 }
 
@@ -124,9 +140,14 @@ export interface ToolOptions {
   enablePixelTools: boolean;
   enableEditorEval: boolean;
   disableEval: boolean;
-  godotBin: string | null;
+  godot: GodotResolver;
   projectPath: string | null;
   runtimeDir: string;
+  addonSource: string | null;
+  // Extra fields merged into gd_status: engine resolution and addon install
+  // state live outside the BridgeManager, which only knows about connections.
+  extraStatus?: () => Record<string, unknown>;
+  onInstallOutcome?: (outcome: { error: string | null; source: string | null }) => void;
 }
 
 export function registerTools(server: McpServer, manager: BridgeManager, events: EventRing, options: ToolOptions): void {
@@ -397,11 +418,12 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   server.registerTool(
     "gd_status",
     {
-      description: "Report broker status: editor connection and engine version, and the connected game instances.",
+      description:
+        "Report broker status: editor connection and engine version, the connected game instances, the resolved engine binary, and the addon install state of the configured project.",
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async () => textResult(manager.status()),
+    async () => textResult({ ...manager.status(), ...(options.extraStatus?.() ?? {}) }),
   );
 
   server.registerTool(
@@ -438,9 +460,12 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   }
 
   registerSessionTools(server, manager, {
-    godotBin: options.godotBin,
+    godot: options.godot,
     projectPath: options.projectPath,
     runtimeDir: options.runtimeDir,
+    addonSource: options.addonSource,
+    version: VERSION,
+    onInstallOutcome: options.onInstallOutcome,
   });
 
   registerClassDbTools(server, manager);
@@ -468,6 +493,50 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   // disabling eval drops both (section 9).
   if (options.enableEditorEval && !options.disableEval) {
     registerEditorEvalTools(server, manager);
+  }
+}
+
+/** Addon install state tracked across the broker's lifetime, reported by gd_status. */
+interface AddonStatus {
+  detection: AddonDetection | null;
+  lastInstallError: string | null;
+  lastAttemptSource: string | null;
+}
+
+/**
+ * Install the addon when the configured directory is a Godot project that has
+ * none. Only the "missing" state auto-installs: "stale" and "unmanaged" both
+ * imply a loaded extension and therefore a connected editor, which
+ * gd_addon_install refuses anyway, so fixing them is an explicit call.
+ */
+async function autoInstall(config: Config, status: AddonStatus, events: EventRing): Promise<void> {
+  if (!config.projectPath || status.detection?.state !== "missing" || !status.detection.projectValid) {
+    return;
+  }
+  status.lastAttemptSource = config.addonSource;
+  events.record("addon_install_started", { project_path: config.projectPath, version: VERSION });
+  log(`installing the conduit addon v${VERSION} into ${config.projectPath}`);
+  try {
+    const result = await installAddon({
+      projectPath: config.projectPath,
+      version: VERSION,
+      source: config.addonSource,
+    });
+    status.detection = detectAddon(config.projectPath, VERSION);
+    status.lastInstallError = null;
+    status.lastAttemptSource = result.source;
+    log(`addon installed from ${result.source}; open the project in Godot so the extension loads`);
+    events.record("addon_installed", {
+      version: VERSION,
+      source: result.source,
+      autoload_added: result.autoloadAdded,
+      files: result.files.length,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    status.lastInstallError = message;
+    log(`addon install failed: ${message}`);
+    events.record("addon_install_failed", { error: message });
   }
 }
 
@@ -513,19 +582,68 @@ async function main(): Promise<void> {
   try {
     const hello = await manager.connectEditor();
     log(`connected to editor bridge (engine ${hello.engine_version})`);
-  } catch (error) {
-    log(`editor bridge not available yet (${error instanceof Error ? error.message : String(error)}); continuing without it`);
+  } catch {
+    log(`editor bridge not available yet; continuing without it. ${manager.editorHint()}`);
   }
   manager.startEditorReconnect();
   manager.startGameDiscovery();
+
+  // Detection is filesystem-only and cheap, so it runs before the transport is
+  // up. Installing is not: it may reach the network, so it waits until after
+  // server.connect below rather than delaying the MCP handshake.
+  const addon: AddonStatus = {
+    detection: config.projectPath ? detectAddon(config.projectPath, VERSION) : null,
+    lastInstallError: null,
+    lastAttemptSource: null,
+  };
+  if (addon.detection && !addon.detection.projectValid) {
+    log(`${config.projectPath} has no project.godot, so it is not a Godot project`);
+  } else if (addon.detection?.state === "missing") {
+    log(
+      config.autoInstall
+        ? "the conduit addon is not installed in this project; installing it"
+        : "the conduit addon is not installed in this project; set CONDUIT_AUTO_INSTALL=1 or call gd_addon_install to install it",
+    );
+  } else if (addon.detection?.state === "stale") {
+    log(
+      `the installed addon is v${addon.detection.installedVersion} but this broker is v${VERSION}; close the editor and call gd_addon_install to update it`,
+    );
+  } else if (addon.detection?.state === "unmanaged") {
+    log("addons/conduit exists but was not installed by Conduit; leaving it alone");
+  }
 
   registerTools(server, manager, events, {
     enablePixelTools: config.enablePixelTools,
     enableEditorEval: config.enableEditorEval,
     disableEval: config.disableEval,
-    godotBin: config.godotBin,
+    godot: config.godot,
     projectPath: config.projectPath,
     runtimeDir: config.runtimeDir,
+    addonSource: config.addonSource,
+    onInstallOutcome: ({ error, source }) => {
+      addon.lastInstallError = error;
+      addon.lastAttemptSource = source;
+      if (config.projectPath) {
+        addon.detection = detectAddon(config.projectPath, VERSION);
+      }
+    },
+    extraStatus: () => {
+      const engine = config.godot.resolve();
+      return {
+        engine: { binary: engine?.path ?? null, source: engine?.source ?? null },
+        addon: {
+          project_path: config.projectPath,
+          project_valid: addon.detection?.projectValid ?? null,
+          state: addon.detection?.state ?? null,
+          installed_version: addon.detection?.installedVersion ?? null,
+          expected_version: VERSION,
+          autoload: addon.detection?.autoloadPresent ?? null,
+          auto_install: config.autoInstall,
+          last_install_error: addon.lastInstallError,
+          last_attempt_source: addon.lastAttemptSource,
+        },
+      };
+    },
   });
   // Project-defined tools execute project code, so they are eval-class and
   // disabled together with gd_game_eval (section 9).
@@ -545,6 +663,12 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log("MCP server ready on stdio");
+
+  // After the handshake, so a slow or failing download never delays the client.
+  // Progress reaches the agent through the event ring and gd_status.
+  if (config.autoInstall) {
+    void autoInstall(config, addon, events);
+  }
 }
 
 if (import.meta.main) {

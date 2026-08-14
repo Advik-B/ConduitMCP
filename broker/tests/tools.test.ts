@@ -4,6 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { BridgeManager } from "../src/bridge-manager.ts";
 import type { EventRing } from "../src/events.ts";
+import { GodotResolver } from "../src/godot-locate.ts";
 import { registerTools } from "../src/index.ts";
 
 interface Registration {
@@ -36,13 +37,16 @@ function toolOptions(overrides: OptionOverrides = {}) {
     enablePixelTools: overrides.enablePixelTools ?? false,
     enableEditorEval: overrides.enableEditorEval ?? false,
     disableEval: overrides.disableEval ?? false,
-    godotBin: null,
+    godot: new GodotResolver(null),
     projectPath: null,
     runtimeDir: "",
+    addonSource: null,
   };
 }
 
 const EXPECTED_TOOLS = [
+  "gd_addon_install",
+  "gd_addon_status",
   "gd_animation",
   "gd_asset_add",
   "gd_asset_reimport",

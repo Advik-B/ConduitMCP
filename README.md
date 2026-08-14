@@ -34,7 +34,7 @@ Nothing listens on the network, and the bridge refuses to activate in release bu
 
 ## What the agent can do
 
-87 tools, 82 exposed by default and the rest behind opt-in flags. The broad strokes:
+89 tools, 84 exposed by default and the rest behind opt-in flags. The broad strokes:
 
 - **Edit scenes the way the editor does**: open, create, and save scenes; add, remove, reparent, rename, and duplicate nodes; set properties with full Godot typing (vectors, colors, resources); attach and validate scripts; wire signals and groups; manage autoloads and the input map. Every mutation is undo-wrapped, so one `gd_undo` reverses it and the developer's undo history stays coherent.
 
@@ -63,11 +63,17 @@ Nothing listens on the network, and the bridge refuses to activate in release bu
 
 ## Install the addon
 
+Conduit is two halves: the MCP server below, and a GDExtension that lives in your Godot project. Let the broker install that half for you, or do it by hand.
+
+**Automatically.** Set `CONDUIT_AUTO_INSTALL=1` in the MCP client entry (see below). Pointed at a Godot project with no addon, the broker downloads the addon matching its own version, writes it to `addons/conduit/`, and registers the `ConduitRuntime` autoload in `project.godot`, backing that file up first. Then open the project in Godot. The agent can also do it on request with `gd_addon_install`, and `gd_addon_status` reports what is installed. Godot only loads a GDExtension at startup, so installing is refused while the editor is open.
+
+**By hand.**
+
 1. Download `conduit-addon-vX.Y.Z.zip` from [Releases](https://github.com/Advik-B/ConduitMCP/releases) and extract it into your project root, so the files land under `addons/conduit/`.
 2. Open the project once so Godot loads the extension. Editor-side tools work from here.
 3. For game-side tools (play, input, screenshots, eval), add the runtime autoload: Project Settings, Globals, Autoload, add `res://addons/conduit/conduit_runtime.tscn` with the name `ConduitRuntime`.
 
-On macOS, clear the quarantine attribute after extracting: `xattr -dr com.apple.quarantine addons/conduit`.
+On macOS, a zip extracted by hand is quarantined; clear it with `xattr -dr com.apple.quarantine addons/conduit`. Files the broker writes itself are not quarantined, so an automatic install needs no such step.
 
 ## Run the broker
 
@@ -82,8 +88,8 @@ Claude Code (`.mcp.json` in your project, or `claude mcp add`):
       "command": "npx",
       "args": ["-y", "conduit-mcp-server", "--project", "/absolute/path/to/your-godot-project"],
       "env": {
-        "CONDUIT_ENABLE": "1",
-        "CONDUIT_GODOT": "/absolute/path/to/godot"
+        "CONDUIT_AUTO_INSTALL": "1",
+        "CONDUIT_ENABLE": "1"
       }
     }
   }
@@ -94,10 +100,12 @@ On Bun, use `bunx` as the `command` and drop the `-y`. Pin a version with `condu
 
 Claude Desktop uses the same entry under `mcpServers` in `claude_desktop_config.json`.
 
-The two environment variables are optional but recommended:
+The project path is the only thing the broker needs. Both environment variables are optional:
 
-- `CONDUIT_ENABLE=1` lets the game-side bridge activate in games launched from an editor the broker started (`gd_editor_launch`). If you launch the editor yourself and want game-side tools, start it with this variable set: `CONDUIT_ENABLE=1 godot --editor --path .`
-- `CONDUIT_GODOT` tells the broker which engine binary `gd_editor_launch` and `gd_project_scaffold` should use. Without it the agent can still attach to an editor you opened yourself.
+- `CONDUIT_AUTO_INSTALL=1` installs the addon into the project if it is not there yet. Drop it once the addon is installed, or leave it: it does nothing when the addon is already current.
+- `CONDUIT_ENABLE=1` lets the game-side bridge activate in games launched from an editor the broker started (`gd_editor_launch`). If you launch the editor yourself and want game-side tools, start it with this variable set: `CONDUIT_ENABLE=1 godot --editor --path .` on Linux and macOS, or `$env:CONDUIT_ENABLE=1; godot --editor --path .` in PowerShell.
+
+You do not need to tell Conduit where Godot is. Attaching never uses an engine binary at all: the broker finds a running editor for the configured project by its local endpoint. `gd_editor_launch`, the one tool that starts an editor itself, looks for the binary on `PATH` and in the usual install locations; `CONDUIT_GODOT` overrides that if your Godot lives somewhere unusual.
 
 Editor-side tools need no opt-in: the broker finds any running editor for the configured project automatically.
 
@@ -110,21 +118,25 @@ Two alternatives to npm, if you want them:
 
 ## Flags and safety
 
-The broker's full configuration surface:
+The broker's main configuration surface. Every variable Conduit reads, including the transport and engine-side ones, is documented in [docs/environment.md](docs/environment.md).
 
 | Flag | Env | Effect |
 | --- | --- | --- |
 | `--project <path>` | `CONDUIT_PROJECT` | The Godot project to attach to (required, or `CONDUIT_SOCK`). |
-| `--godot <path>` | `CONDUIT_GODOT` | Engine binary for `gd_editor_launch` and `gd_project_scaffold`. |
+| `--auto-install` | `CONDUIT_AUTO_INSTALL` | Install the matching addon into the project if it has none (off by default). |
+| `--addon-source <path>` | `CONDUIT_ADDON_SOURCE` | Install the addon from a local zip, directory, or URL instead of the GitHub release. |
+| `--godot <path>` | `CONDUIT_GODOT` | Override the engine binary for `gd_editor_launch`; found automatically otherwise. |
 | `--enable-pixel-tools` | `CONDUIT_ENABLE_PIXEL_TOOLS` | Enable coordinate-level editor mouse tools (off by default). |
 | `--enable-editor-eval` | `CONDUIT_ENABLE_EDITOR_EVAL` | Enable `gd_editor_eval`, GDScript in the editor process (off by default). |
 | `--disable-eval` | `CONDUIT_DISABLE_EVAL` | Drop the whole eval class: `gd_game_eval`, `gd_editor_eval`, networking tools, project-defined tools. |
+
+Boolean variables are off when unset, empty, `0`, `false`, `no`, or `off`, and on for anything else.
 
 The safety properties are structural, not configuration:
 
 - Bridge and broker talk over local IPC only. The broker's only external interface is MCP on stdio; no TCP port is opened by default.
 - The bridge listener never activates in a release build, enforced in code and covered by a test. Release export presets additionally exclude the bridge binaries.
-- In a game process (debug builds included) the bridge activates only with an explicit opt-in: the `--conduit` user argument or `CONDUIT_ENABLE`.
+- In a game process (debug builds included) the bridge activates only with an explicit opt-in: the `--conduit` user argument (or the bare form `conduit`) or `CONDUIT_ENABLE`.
 - File tools are confined to `res://` and `user://` paths.
 
 ## Building from source

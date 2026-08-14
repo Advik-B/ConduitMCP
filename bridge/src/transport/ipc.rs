@@ -138,7 +138,7 @@ impl Endpoint {
 
 /// Whether the loopback TCP fallback is requested.
 fn tcp_fallback() -> bool {
-    std::env::var("CONDUIT_TCP").map(|v| !v.is_empty()).unwrap_or(false)
+    crate::env::env_flag("CONDUIT_TCP")
 }
 
 /// Derive a stable loopback port from an endpoint token, in the IANA

@@ -5,6 +5,7 @@
 //! threading model of section 6.4 is the load-bearing part proven here.
 
 pub mod dispatcher;
+pub mod env;
 pub mod handlers;
 pub mod history;
 pub mod protocol;

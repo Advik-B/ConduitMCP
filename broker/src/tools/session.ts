@@ -17,7 +17,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { AddonError, detectAddon, installAddon } from "../addon.ts";
 import type { BridgeManager, EditorProcess } from "../bridge-manager.ts";
+import type { GodotResolver } from "../godot-locate.ts";
+import { searchedLocations } from "../godot-locate.ts";
 import { BridgeError } from "../ipc-client.ts";
 import { textResult, toToolError } from "../tool-helpers.ts";
 
@@ -26,9 +29,13 @@ const EDITOR_QUIT_TIMEOUT_MS = 15_000;
 const LOG_TAIL_BYTES = 4_096;
 
 export interface SessionToolOptions {
-  godotBin: string | null;
+  godot: GodotResolver;
   projectPath: string | null;
   runtimeDir: string;
+  addonSource: string | null;
+  version: string;
+  /** Records the outcome so gd_status can report it (see index.ts). */
+  onInstallOutcome?: (outcome: { error: string | null; source: string | null }) => void;
 }
 
 const RUNTIME_SCENE = '[gd_scene format=3]\n\n[node name="ConduitRuntime" type="ConduitRuntime"]\n';
@@ -195,9 +202,13 @@ export function registerSessionTools(
         }
         const library = (args.library as string | undefined) ?? defaultLibraryPath();
         if (!library) {
+          // defaultLibraryPath resolves the workspace cargo output, which does
+          // not exist for a broker installed from npm. gd_addon_install is the
+          // path that fetches a prebuilt library instead of building one.
           throw new BridgeError({
             code: "bridge_library_not_found",
-            message: "no built bridge library found in the workspace; build it with 'cargo build' in bridge/ or pass 'library'",
+            message:
+              "no built bridge library found in the workspace; pass 'library', or build it with 'cargo build' in bridge/. To set up an existing project instead, use gd_addon_install, which fetches the prebuilt addon for this broker's version",
             retryable: false,
           });
         }
@@ -212,10 +223,98 @@ export function registerSessionTools(
   );
 
   server.registerTool(
+    "gd_addon_install",
+    {
+      description:
+        "Install or repair the Conduit addon in the configured Godot project: fetch the addon matching this broker's version, write addons/conduit/, and register the ConduitRuntime autoload in project.godot. Reports the current state without installing when nothing needs doing. Requires that no editor is running, because Godot only loads a new GDExtension at startup.",
+      inputSchema: {
+        force: z.boolean().describe("Reinstall even when the addon is already present or was installed by hand.").optional(),
+        source: z
+          .string()
+          .describe("Override the addon source: a local zip, an unpacked directory, or a URL. Defaults to the matching GitHub release.")
+          .optional(),
+        autoload: z.boolean().describe("Register the ConduitRuntime autoload in project.godot (default true).").optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      const source = (args.source as string | undefined) ?? options.addonSource;
+      try {
+        if (!options.projectPath) {
+          throw new BridgeError({
+            code: "invalid_args",
+            message: "no project configured; start the broker with --project or CONDUIT_PROJECT",
+            retryable: false,
+          });
+        }
+        // A connected editor has already loaded (or failed to load) the
+        // extension, and it owns project.godot for the rest of its session.
+        if (manager.isEditorConnected()) {
+          throw new BridgeError({
+            code: "editor_running",
+            message:
+              "an editor bridge is connected; close the Godot editor before installing the addon, because a newly added GDExtension is only loaded at editor startup",
+            retryable: true,
+          });
+        }
+        const result = await installAddon({
+          projectPath: options.projectPath,
+          version: options.version,
+          source,
+          autoload: args.autoload as boolean | undefined,
+          force: args.force === true,
+        });
+        options.onInstallOutcome?.({ error: null, source: result.source });
+        return textResult({
+          ...result,
+          next_step: "open the project in Godot so the extension loads, then the editor tools become available",
+        });
+      } catch (error) {
+        options.onInstallOutcome?.({
+          error: error instanceof Error ? error.message : String(error),
+          source: source ?? null,
+        });
+        if (error instanceof AddonError) {
+          return toToolError(new BridgeError({ code: error.code, message: error.message, retryable: error.retryable }));
+        }
+        return toToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "gd_addon_status",
+    {
+      description:
+        "Report whether the configured directory is a Godot project, whether the Conduit addon is installed, whether its version matches this broker, and whether the ConduitRuntime autoload is registered.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async () => {
+      try {
+        if (!options.projectPath) {
+          throw new BridgeError({
+            code: "invalid_args",
+            message: "no project configured; start the broker with --project or CONDUIT_PROJECT",
+            retryable: false,
+          });
+        }
+        return textResult({
+          project_path: options.projectPath,
+          expected_version: options.version,
+          ...detectAddon(options.projectPath, options.version),
+        });
+      } catch (error) {
+        return toToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
     "gd_editor_launch",
     {
       description:
-        "Launch the Godot editor on the broker's configured project with the configured engine binary (--godot or CONDUIT_GODOT) and wait for its bridge to connect. headless=true runs the editor without a window, which is how scripted sessions drive it.",
+        "Launch the Godot editor on the broker's configured project and wait for its bridge to connect. The engine binary is found automatically (PATH, then the usual install locations); --godot or CONDUIT_GODOT overrides that. headless=true runs the editor without a window, which is how scripted sessions drive it.",
       inputSchema: {
         headless: z.boolean().describe("Run the editor with --headless (no window).").optional(),
       },
@@ -237,10 +336,11 @@ export function registerSessionTools(
             retryable: true,
           });
         }
-        if (!options.godotBin) {
+        const godot = options.godot.resolve();
+        if (!godot) {
           throw new BridgeError({
-            code: "godot_binary_not_configured",
-            message: "no engine binary configured; start the broker with --godot <path> or CONDUIT_GODOT",
+            code: "godot_binary_not_found",
+            message: `no Godot engine binary found; searched ${searchedLocations().join(", ")}. Set --godot <path> or CONDUIT_GODOT, or open the project in the editor yourself and the broker will attach to it`,
             retryable: false,
           });
         }
@@ -260,7 +360,7 @@ export function registerSessionTools(
         }
         spawnArgs.push("--log-file", logPath);
 
-        const proc = spawn(options.godotBin, spawnArgs, {
+        const proc = spawn(godot.path, spawnArgs, {
           detached: true,
           stdio: "ignore",
           env: { ...process.env, CONDUIT_RUNTIME_DIR: options.runtimeDir },
@@ -296,6 +396,8 @@ export function registerSessionTools(
               pid: proc.pid,
               headless,
               engine_version: hello.engine_version,
+              engine_binary: godot.path,
+              engine_binary_source: godot.source,
             });
           } catch {
             // Keep waiting until the overall deadline.

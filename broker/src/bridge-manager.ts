@@ -9,14 +9,19 @@ import {
   type Endpoint,
   endpointKey,
   gameEndpointFromToken,
+  listEditorTokens,
   listGameTokens,
   projectHash,
+  tcpEnabled,
 } from "./endpoint.ts";
 import { canonicalProjectKey } from "./framing.ts";
 import { BridgeClient, BridgeError, type Hello } from "./ipc-client.ts";
 import type { EventRing } from "./events.ts";
 
 export const PROTOCOL_VERSION = 1;
+
+const ENDPOINT_BACKOFF_BASE_MS = 250;
+const ENDPOINT_BACKOFF_MAX_MS = 30_000;
 
 export interface BridgeManagerOptions {
   editorEndpoint: Endpoint;
@@ -72,6 +77,12 @@ export class BridgeManager {
   private reconnectTimer: ReturnType<typeof setInterval> | null = null;
   private discoveryTimer: ReturnType<typeof setInterval> | null = null;
   private editorProcess: EditorProcess | null = null;
+  // Backoff for game endpoints that fail to connect. A .sock left behind by a
+  // SIGKILLed game is never cleaned up by its owner and would otherwise be
+  // retried every poll for the broker's lifetime, one stderr line each time.
+  // Unlinking it is not an option: the file may belong to a live process the
+  // broker simply cannot reach yet.
+  private readonly endpointBackoff = new Map<string, { until: number; attempts: number; capped: boolean }>();
 
   constructor(private readonly options: BridgeManagerOptions) {}
 
@@ -98,9 +109,33 @@ export class BridgeManager {
     } while (Date.now() < deadline);
     throw new BridgeError({
       code: "editor_unavailable",
-      message: `could not connect to the editor bridge at ${endpointKey(this.options.editorEndpoint)}: ${String(lastError)}`,
+      message: `could not connect to the editor bridge at ${endpointKey(this.options.editorEndpoint)}: ${String(lastError)}. ${this.editorHint()}`,
       retryable: true,
     });
+  }
+
+  /**
+   * Why the derived editor endpoint is not answering, in terms of what is
+   * actually advertised. The endpoint hash is one-way, so an endpoint cannot be
+   * mapped back to a project without connecting, and connecting to someone
+   * else's editor is not safe: on Windows a bridge pipe serves one client at a
+   * time. Counting tokens is the most that can be said without probing, and it
+   * distinguishes the two failures users actually hit.
+   */
+  editorHint(): string {
+    if (tcpEnabled()) {
+      return "endpoint scanning is unavailable under CONDUIT_TCP, so the broker cannot tell whether an editor is running";
+    }
+    const ourToken = this.options.projectPath ? `conduit-editor-${projectHash(this.options.projectPath)}` : null;
+    const tokens = listEditorTokens(this.options.runtimeDir);
+    if (ourToken && tokens.includes(ourToken)) {
+      return "an editor endpoint for this project exists but is not accepting a connection; it may still be starting, or another broker already holds it (a bridge serves one client at a time)";
+    }
+    if (tokens.length === 0) {
+      return "no Godot editor is advertising a Conduit endpoint; open the project in Godot and confirm the addon is installed under addons/conduit";
+    }
+    const project = this.options.projectPath ?? "(none configured)";
+    return `${tokens.length} editor bridge(s) are running, none of them for ${project}; check that --project names the same folder that is open in Godot`;
   }
 
   // One connect attempt, guarded so the background reconnect loop and a
@@ -317,9 +352,17 @@ export class BridgeManager {
     const hash = this.options.projectPath
       ? projectHash(this.options.projectPath)
       : undefined;
+    const now = Date.now();
     return listGameTokens(this.options.runtimeDir, hash)
       .map((token) => gameEndpointFromToken(this.options.runtimeDir, token))
-      .filter((endpoint) => !this.connectedSockets.has(endpointKey(endpoint)));
+      .filter((endpoint) => {
+        const key = endpointKey(endpoint);
+        if (this.connectedSockets.has(key)) {
+          return false;
+        }
+        const backoff = this.endpointBackoff.get(key);
+        return !backoff || backoff.until <= now;
+      });
   }
 
   private async tryConnectGame(endpoint: Endpoint): Promise<GameInstance | null> {
@@ -345,13 +388,25 @@ export class BridgeManager {
       this.games.set(hello.pid, instance);
       this.currentPid = hello.pid;
       this.connectedSockets.add(key);
+      this.endpointBackoff.delete(key);
       this.options.events.record("game_started", { pid: hello.pid, engine_version: hello.engine_version });
       log(`game bridge connected (pid ${hello.pid}, engine ${hello.engine_version})`);
       return instance;
     } catch (error) {
-      // The endpoint may exist before the game finishes binding; leave it for the
-      // next poll rather than marking it connected.
-      log(`game endpoint ${key} not ready yet: ${String(error)}`);
+      // The endpoint may exist before the game finishes binding, so it is left
+      // for a later poll rather than marked connected. Back off geometrically
+      // so a socket whose owner is gone stops costing an attempt and a log line
+      // every second, and go quiet once the delay reaches its cap.
+      const previous = this.endpointBackoff.get(key);
+      const attempts = (previous?.attempts ?? 0) + 1;
+      const delayMs = Math.min(2 ** attempts * ENDPOINT_BACKOFF_BASE_MS, ENDPOINT_BACKOFF_MAX_MS);
+      const capped = delayMs >= ENDPOINT_BACKOFF_MAX_MS;
+      this.endpointBackoff.set(key, { until: Date.now() + delayMs, attempts, capped });
+      if (!capped) {
+        log(`game endpoint ${key} not ready yet, retrying in ${delayMs}ms: ${String(error)}`);
+      } else if (!previous?.capped) {
+        log(`game endpoint ${key} unreachable after ${attempts} attempts; slowing to one attempt every ${ENDPOINT_BACKOFF_MAX_MS / 1000}s and no longer logging it`);
+      }
       client.close();
       return null;
     }
@@ -367,6 +422,7 @@ export class BridgeManager {
   private handleGameClose(pid: number, key: string): void {
     this.games.delete(pid);
     this.connectedSockets.delete(key);
+    this.endpointBackoff.delete(key);
     if (this.currentPid === pid) {
       this.currentPid = null;
     }
@@ -383,11 +439,15 @@ export class BridgeManager {
   }
 
   status(): Record<string, unknown> {
+    const connected = this.editor != null;
     return {
       editor: {
-        connected: this.editor != null,
+        connected,
         engine_version: this.editorHello?.engine_version ?? null,
         protocol_version: this.editorHello?.protocol_version ?? null,
+        endpoint: endpointKey(this.options.editorEndpoint),
+        // Only computed when it can help: the hint reads the runtime directory.
+        hint: connected ? null : this.editorHint(),
       },
       games: this.listGames(),
       debug: { breaked: this.debug.breaked, session_id: this.debug.sessionId },
