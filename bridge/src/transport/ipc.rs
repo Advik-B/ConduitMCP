@@ -816,11 +816,23 @@ mod tests {
         }
     }
 
+    /// Serialises the tests that mutate the transport environment.
+    ///
+    /// Environment variables are process-global and cargo runs tests in parallel
+    /// threads of one process, so two tests each setting CONDUIT_SOCK will
+    /// interleave: one overwrites the other's value between its set and its
+    /// read, and the assertion fails on whichever platform lost the race that
+    /// run. This is the lock that stops that being a coin flip.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Save and clear the transport env vars, run `body`, then restore them, so a
     /// developer's ambient CONDUIT_SOCK/CONDUIT_TCP cannot flip the transport the
     /// test asserts. `set_var`/`remove_var` are unsafe in edition 2024 because
     /// they mutate shared process state; these are the only tests touching them.
     fn with_native_transport(body: impl FnOnce()) {
+        // Poisoning only means an earlier test panicked while holding this; the
+        // guarded state is the environment, which is restored below either way.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let prev_sock = std::env::var_os("CONDUIT_SOCK");
         let prev_tcp = std::env::var_os("CONDUIT_TCP");
         unsafe {
