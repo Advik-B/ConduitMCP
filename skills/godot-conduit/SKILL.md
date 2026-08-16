@@ -85,7 +85,8 @@ Errors carry a stable `code`, a message that usually names the fix, and a `retry
 
 | Code | What to do |
 | --- | --- |
-| `editor_unavailable`, `disconnected` | No editor bridge. Launching is not automatically the fix: see `editor_running_unbridged` below, then `gd_editor_launch`, or ask the human to open the project. |
+| `editor_unavailable`, `disconnected` | No editor bridge. Launching is not automatically the fix: see `editor_running_unbridged` and `editor_busy` below, then `gd_editor_launch`, or ask the human to open the project. |
+| `editor_busy` | The bridge accepted the connection and sent no handshake, which means it is already serving another broker: a bridge serves one client at a time. Launching an editor will not help and neither will retrying. Tell the human they have two MCP server entries for this project, commonly the Conduit plugin plus a hand-written `.mcp.json` entry, and that removing one fixes it. |
 | `game_not_running` | `gd_play`. |
 | `game_breaked` | A game is halted at a breakpoint. This is one global flag, so *every* game tool fails until `gd_debug` with `op=continue`. |
 | `no_edited_scene` | Nothing open in the editor. `gd_scene_open`. |

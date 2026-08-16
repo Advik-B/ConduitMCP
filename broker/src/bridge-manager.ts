@@ -74,6 +74,13 @@ export class BridgeManager {
   // bridge pipe serves one client at a time (docs/api-gaps.md).
   private connecting = false;
   private scanning = false;
+  // Backoff and log suppression for the editor endpoint. Unlike a game endpoint
+  // this key never changes, so the state lives in fields rather than in
+  // endpointBackoff, and only the expensive failure shape backs off; see
+  // noteEditorFailure.
+  private editorBackoffUntil = 0;
+  private editorAttempts = 0;
+  private editorQuiet = false;
   private reconnectTimer: ReturnType<typeof setInterval> | null = null;
   private discoveryTimer: ReturnType<typeof setInterval> | null = null;
   private editorProcess: EditorProcess | null = null;
@@ -143,8 +150,10 @@ export class BridgeManager {
   private async attemptEditorConnect(): Promise<Hello> {
     this.connecting = true;
     const client = new BridgeClient({ endpoint: this.options.editorEndpoint, defaultTimeoutMs: this.options.timeoutMs });
+    let connected = false;
     try {
       await client.connect();
+      connected = true;
       const hello = await client.waitForHello(5_000);
       checkProtocol(hello);
       client.onEvent = (event) => this.handleEditorEvent(event);
@@ -161,6 +170,20 @@ export class BridgeManager {
       return hello;
     } catch (error) {
       client.close();
+      // Accepted the socket, then no hello inside the timeout. The listener
+      // serves one client at a time on every transport (bridge accept loops in
+      // bridge/src/transport/ipc.rs), so the connection sits in the backlog
+      // unanswered while another broker is being served. Naming that is the
+      // difference between a silent stall and something a user can act on; it
+      // is the usual cause when a second MCP server entry is configured for a
+      // project that already has one.
+      if (connected && error instanceof BridgeError && error.code === "timeout") {
+        throw new BridgeError({
+          code: "editor_busy",
+          message: `the editor bridge at ${endpointKey(this.options.editorEndpoint)} accepted the connection but sent no hello frame; a bridge serves one broker at a time, so another broker or a second MCP server entry for this project is probably already attached to it`,
+          retryable: true,
+        });
+      }
       throw error;
     } finally {
       this.connecting = false;
@@ -174,15 +197,58 @@ export class BridgeManager {
     if (this.reconnectTimer) {
       return;
     }
-    this.reconnectTimer = setInterval(() => {
-      if (this.editor || this.connecting) {
+    const attempt = (): void => {
+      if (this.editor || this.connecting || Date.now() < this.editorBackoffUntil) {
         return;
       }
       this.attemptEditorConnect()
-        .then((hello) => log(`editor bridge reconnected (engine ${hello.engine_version})`))
-        .catch(() => {});
-    }, intervalMs);
+        .then((hello) => {
+          this.editorBackoffUntil = 0;
+          this.editorAttempts = 0;
+          this.editorQuiet = false;
+          log(`editor bridge connected (engine ${hello.engine_version})`);
+        })
+        .catch((error: unknown) => this.noteEditorFailure(error));
+    };
+    // Immediately, not one interval from now. This loop is the only thing that
+    // connects the editor at startup, so deferring the first attempt would leave
+    // an already-running editor unattached for the first tool calls a client
+    // makes after the handshake.
+    attempt();
+    this.reconnectTimer = setInterval(attempt, intervalMs);
     this.reconnectTimer.unref?.();
+  }
+
+  /**
+   * Record a failed editor connection, deciding whether to slow down and whether
+   * to say anything.
+   *
+   * The two failure shapes cost very different amounts. A bridge that is not
+   * there refuses instantly, so retrying every interval is free and the only
+   * thing worth suppressing is a log line every two seconds for the broker's
+   * lifetime. A bridge that accepts and then never says hello costs a full
+   * five-second timeout per attempt and, worse, holds the listener's single
+   * accept slot for that whole time, which is exactly the slot the incumbent
+   * broker needs to reconnect through. That one backs off geometrically.
+   */
+  private noteEditorFailure(error: unknown): void {
+    if (error instanceof BridgeError && error.code === "editor_busy") {
+      // Counted only here, so the delay reflects consecutive busy attempts. A
+      // shared counter would let a long absence push the very first busy attempt
+      // straight to the cap.
+      this.editorAttempts += 1;
+      const delayMs = Math.min(2 ** this.editorAttempts * ENDPOINT_BACKOFF_BASE_MS, ENDPOINT_BACKOFF_MAX_MS);
+      this.editorBackoffUntil = Date.now() + delayMs;
+      if (!this.editorQuiet) {
+        this.editorQuiet = true;
+        log(`${error.message}; retrying quietly, at most every ${Math.round(ENDPOINT_BACKOFF_MAX_MS / 1000)}s`);
+      }
+      return;
+    }
+    if (!this.editorQuiet) {
+      this.editorQuiet = true;
+      log(`editor bridge not available yet; continuing without it. ${this.editorHint()}`);
+    }
   }
 
   // Adopt game bridges that appear without gd_play: launched externally with

@@ -1,6 +1,9 @@
+import net from "node:net";
+
 import { describe, expect, test } from "bun:test";
 
-import { BridgeManager } from "../src/bridge-manager.ts";
+import { BridgeManager, PROTOCOL_VERSION } from "../src/bridge-manager.ts";
+import { encodeFrame } from "../src/framing.ts";
 import { BridgeError } from "../src/ipc-client.ts";
 import { EventRing } from "../src/events.ts";
 
@@ -111,4 +114,92 @@ describe("phase 9 session lifecycle", () => {
     const snapshot = manager.knownGamePids();
     expect(snapshot.size).toBe(0);
   });
+});
+
+// Loopback TCP throughout: BridgeManager takes the endpoint as a value, so these
+// exercise the same code paths a socket or pipe would, without the Windows
+// named-pipe quirk noted above.
+describe("editor reconnect at startup", () => {
+  function managerFor(port: number): BridgeManager {
+    return new BridgeManager({
+      editorEndpoint: { host: "127.0.0.1", port },
+      runtimeDir: "/tmp",
+      projectPath: null,
+      timeoutMs: 1000,
+      events: new EventRing(16),
+    });
+  }
+
+  function listen(onConnection: (socket: net.Socket) => void): Promise<net.Server> {
+    const server = net.createServer(onConnection);
+    return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
+  }
+
+  function portOf(server: net.Server): number {
+    return (server.address() as net.AddressInfo).port;
+  }
+
+  async function settle(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  test("the first connect attempt happens immediately, not one interval later", async () => {
+    const accepted: net.Socket[] = [];
+    const server = await listen((socket) => {
+      accepted.push(socket);
+      socket.write(
+        encodeFrame({
+          hello: {
+            role: "editor",
+            protocol_version: PROTOCOL_VERSION,
+            bridge_version: "0.0.0",
+            engine_version: "4.4.0",
+            project_path: "/tmp/project",
+            pid: 1,
+          },
+        }),
+      );
+    });
+    const manager = managerFor(portOf(server));
+    try {
+      // An interval far longer than the wait below: only an immediate first
+      // attempt can connect within it. This is what keeps the editor usable now
+      // that the handshake no longer waits for it.
+      manager.startEditorReconnect(60_000);
+      await settle(300);
+      expect(manager.isEditorConnected()).toBe(true);
+    } finally {
+      manager.stopBackground();
+      // server.close only fires once every accepted socket is gone, and the
+      // manager keeps its editor connection open by design.
+      for (const socket of accepted) {
+        socket.destroy();
+      }
+      await new Promise((resolve) => server.close(() => resolve(null)));
+    }
+  });
+
+  test("an endpoint that accepts but never says hello is reported as busy, not as absent", async () => {
+    const held: net.Socket[] = [];
+    // A bridge already serving another broker: the listener accepts into its
+    // backlog and writes nothing, because it serves one client at a time.
+    const server = await listen((socket) => held.push(socket));
+    const manager = managerFor(portOf(server));
+    try {
+      let captured: BridgeError | null = null;
+      try {
+        await manager.ensureEditorConnected(100);
+      } catch (error) {
+        captured = error as BridgeError;
+      }
+      expect(captured).toBeInstanceOf(BridgeError);
+      expect(captured?.code).toBe("editor_unavailable");
+      expect(captured?.message).toContain("serves one broker at a time");
+    } finally {
+      for (const socket of held) {
+        socket.destroy();
+      }
+      await new Promise((resolve) => server.close(() => resolve(null)));
+    }
+  }, 20_000);
 });

@@ -92,7 +92,7 @@ Desktop (\`claude_desktop_config.json\`) use the same entry:
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "${PACKAGE_NAME}", "--project", "/absolute/path/to/your-godot-project"],
+      "args": ["-y", "${PACKAGE_NAME}@${version}", "--project", "/absolute/path/to/your-godot-project"],
       "env": {
         "CONDUIT_AUTO_INSTALL": "1",
         "CONDUIT_ENABLE": "1"
@@ -102,8 +102,18 @@ Desktop (\`claude_desktop_config.json\`) use the same entry:
 }
 \`\`\`
 
-On Bun, use \`bunx\` as the \`command\` and drop the \`-y\`. To stay on a known pair
-rather than tracking the latest, pin the version: \`${PACKAGE_NAME}@${version}\`.
+On Bun, use \`bunx\` as the \`command\` and drop the \`-y\`.
+
+The version is pinned on purpose. Unpinned, \`npx\` and \`bunx\` re-resolve the
+package against the registry on every server start, spending part of the startup
+budget your MCP client holds a timeout over, and the broker can drift away from
+the addon version in your project.
+
+Run one broker per project. The bridge serves a single client at a time, so a
+second server entry for a project that already has one connects and then waits
+for a handshake the bridge is not free to send. If you installed the Claude Code
+plugin below, that entry is already your server for the project. \`gd_status\`
+names this case when it happens.
 
 The project path is all the server needs; both environment variables are
 optional. \`CONDUIT_AUTO_INSTALL=1\` installs the addon as described above and

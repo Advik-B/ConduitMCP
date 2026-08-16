@@ -693,19 +693,6 @@ async function main(): Promise<void> {
     events,
   });
 
-  // An absent editor is not fatal: gd_project_scaffold and gd_editor_launch
-  // exist precisely for sessions that start before any editor does (section 8),
-  // and the background reconnect adopts an editor whenever one appears.
-  log(`connecting to editor bridge at ${endpointKey(config.editorEndpoint)}`);
-  try {
-    const hello = await manager.connectEditor();
-    log(`connected to editor bridge (engine ${hello.engine_version})`);
-  } catch {
-    log(`editor bridge not available yet; continuing without it. ${manager.editorHint()}`);
-  }
-  manager.startEditorReconnect();
-  manager.startGameDiscovery();
-
   // Detection is filesystem-only and cheap, so it runs before the transport is
   // up. Installing is not: it may reach the network, so it waits until after
   // server.connect below rather than delaying the MCP handshake.
@@ -790,6 +777,19 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await baseServer.connect(transport);
   log("MCP server ready on stdio");
+
+  // Everything below runs after the handshake, and the editor connection is part
+  // of that on purpose. An absent editor is not fatal: gd_project_scaffold and
+  // gd_editor_launch exist precisely for sessions that start before any editor
+  // does (section 8), and the background reconnect adopts one whenever it
+  // appears. Awaiting it here instead would hold stdin unread for the length of
+  // its retry deadline, which is how a client that is waiting on the initialize
+  // response reports the server as having timed out. The endpoint may also be
+  // held by another broker, where every attempt costs a full hello timeout, so
+  // this is the slowest thing the broker can do at startup, not the fastest.
+  log(`connecting to editor bridge at ${endpointKey(config.editorEndpoint)}`);
+  manager.startEditorReconnect();
+  manager.startGameDiscovery();
 
   // After the handshake, so a slow or failing download never delays the client.
   // Progress reaches the agent through the event ring and gd_status.

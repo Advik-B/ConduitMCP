@@ -86,7 +86,7 @@ Claude Code (`.mcp.json` in your project, or `claude mcp add`):
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "conduit-mcp-server", "--project", "/absolute/path/to/your-godot-project"],
+      "args": ["-y", "conduit-mcp-server@0.6.0", "--project", "/absolute/path/to/your-godot-project"],
       "env": {
         "CONDUIT_AUTO_INSTALL": "1",
         "CONDUIT_ENABLE": "1"
@@ -96,7 +96,11 @@ Claude Code (`.mcp.json` in your project, or `claude mcp add`):
 }
 ```
 
-On Bun, use `bunx` as the `command` and drop the `-y`. Pin a version with `conduit-mcp-server@X.Y.Z` if you would rather not track the latest.
+On Bun, use `bunx` as the `command` and drop the `-y`.
+
+The version is pinned on purpose. An unpinned `npx` or `bunx` re-resolves the package against the npm registry every time your client starts the server, which adds network time to a startup your client is holding a timeout over, and it lets the broker drift away from the addon version installed in your project. Bump both together.
+
+**Run one broker per project.** The bridge serves a single client at a time, so a second MCP server entry pointed at a project that already has one can never attach: it connects, waits for a handshake the bridge is not free to send, and reports the editor as unavailable. If you installed the Claude Code plugin below, you already have a server for that project and do not need this entry as well. `gd_status` names this case when it happens.
 
 Claude Desktop uses the same entry under `mcpServers` in `claude_desktop_config.json`.
 

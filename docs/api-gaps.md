@@ -457,6 +457,32 @@ The phase-7 eval therefore closes its default broker before connecting the
 the previous client disconnects, matching the reconnect guarantee of whitepaper
 section 7.5.
 
+### One broker at a time is not a Windows property, and it fails differently on Unix
+
+The constraint above is general. Every accept loop in `bridge/src/transport/ipc.rs`
+runs `accept()` and then serves that one connection to completion before
+accepting again: `accept_loop_local` for Unix sockets, `accept_loop_tcp`, and
+`accept_loop_pipe`. Only the symptom differs. A Windows pipe refuses the second
+connect outright, which is a fast, legible error. A Unix socket and a TCP
+listener both take the second connection into the backlog and then never write
+to it, so the second broker sits in `waitForHello` for its full five-second
+timeout and sees a bare timeout with no indication of the cause.
+
+Two consequences shaped the broker. `attemptEditorConnect` maps
+connected-then-silent onto its own `editor_busy` code, because that shape means
+"someone else is being served" and nothing else. And `startEditorReconnect`
+backs off geometrically on `editor_busy` only, not on an ordinary refusal: each
+attempt against a held bridge occupies the accept slot for five seconds, which is
+the same slot the incumbent broker needs to reconnect through, so retrying hard
+actively harms the connection that works.
+
+This is also why the editor connection must not sit on the MCP startup path. It
+did until 0.6.0: `main()` awaited `connectEditor()` before creating the stdio
+transport, so a broker started against a project that already had one left stdin
+unread for the call's ten-second deadline and the client reported a server
+timeout. `bun run handshake` (`tests/evals/startup_handshake.ts`) pins the fix,
+including against a listener that accepts and stays silent.
+
 ### gd_play from a headless editor remains unproven
 
 Phase 7's game-side checks (`gd_find_nodes`, `gd_classdb` on the game bridge)
