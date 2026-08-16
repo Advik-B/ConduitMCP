@@ -6,6 +6,7 @@
 // Hard rule: nothing but MCP protocol frames may reach stdout. All broker
 // logging goes to stderr (whitepaper section 7.1).
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -95,6 +96,43 @@ interface Config {
 }
 
 /**
+ * The project path as the bridge will see it: absolute, and with every symlink
+ * in it resolved.
+ *
+ * `path.resolve` alone is not enough. Both ends derive the endpoint from a hash
+ * of this path, and the bridge's side comes from `globalize_path("res://")`,
+ * which Godot returns fully resolved. On macOS `/var` and `/tmp` are symlinks
+ * into `/private`, so a project under either (a scaffold in `os.tmpdir()`, for
+ * instance) hashed differently on the two sides and the broker sat waiting on a
+ * socket name nothing would ever bind. `canonicalProjectKey` cannot fix this:
+ * it is a pure string function mirrored in Rust, and the Rust side is already
+ * correct.
+ *
+ * A path that does not exist yet is not an error: `gd_project_scaffold` creates
+ * the project it is pointed at. Resolve the deepest ancestor that does exist and
+ * keep the rest, which is enough for the symlinks that matter here, all of which
+ * sit at the root.
+ */
+export function realProjectPath(raw: string): string {
+  const resolved = path.resolve(raw);
+  const pending: string[] = [];
+  let current = resolved;
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current);
+      return pending.length === 0 ? real : path.join(real, ...pending);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return resolved;
+      }
+      pending.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
  * Turn parsed arguments into the broker's configuration. Command-line options
  * take precedence over environment variables (whitepaper section 15), which is
  * why every `??` chain below reads option first: an option is undefined when it
@@ -110,8 +148,8 @@ export function resolveConfig(cli: CliOptions, env: NodeJS.ProcessEnv = process.
   // MCP client spawns the broker with an arbitrary cwd, so a relative --project
   // would otherwise land somewhere unpredictable. It also makes the derived hash
   // agree with the bridge, which builds its side from globalize_path("res://")
-  // and is therefore always absolute.
-  const projectPath = rawProjectPath ? path.resolve(rawProjectPath) : null;
+  // and is therefore always absolute and fully resolved.
+  const projectPath = rawProjectPath ? realProjectPath(rawProjectPath) : null;
   const override = env.CONDUIT_SOCK;
   const resolvedEndpoint: Endpoint | null = override
     ? editorEndpointFromOverride(override)

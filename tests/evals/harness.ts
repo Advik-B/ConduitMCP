@@ -8,7 +8,7 @@
 // deriving the same endpoint from the project path) rather than pinning
 // CONDUIT_SOCK, which never exercised that path.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,7 +61,24 @@ export function conduitEnv(rtDir: string, extra: Record<string, string> = {}): R
  * for readiness checks. Defaults to the example project, which is what every
  * phase runner drives; the demo recorder passes its own throwaway copy. */
 export function editorEndpointFor(rtDir: string, project: string = exampleProject): Endpoint {
-  return editorEndpoint(rtDir, project);
+  // Resolved, not just absolute, matching what the broker hashes and what the
+  // bridge gets from globalize_path("res://"). On macOS a project under
+  // os.tmpdir() sits below /var, a symlink into /private, so an unresolved path
+  // here would have a runner watching a socket name nothing ever binds
+  // (docs/api-gaps.md).
+  return editorEndpoint(rtDir, realProjectDir(project));
+}
+
+/** The project path as both the broker and the bridge see it. Mirrors
+ * realProjectPath in broker/src/index.ts; a directory that does not exist yet is
+ * left as-is, since only scaffolding runners hit that and they pass the path on
+ * rather than hashing it here. */
+export function realProjectDir(project: string): string {
+  try {
+    return realpathSync(project);
+  } catch {
+    return project;
+  }
 }
 
 export function resolveGodot(): string {

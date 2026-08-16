@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { applyTransportEnv, parseCli, runCli } from "../src/cli.ts";
 import { envInt } from "../src/env.ts";
-import { resolveConfig } from "../src/index.ts";
+import { realProjectPath, resolveConfig } from "../src/index.ts";
 
 const VERSION = "9.9.9";
 
@@ -184,5 +187,62 @@ describe("resolveConfig precedence", () => {
       engineDir: "/tmp/e",
     });
     expect(parseCli(["--install-godot", "--godot-mono"], VERSION)).toEqual({ installGodot: true, godotMono: true });
+  });
+});
+
+// Both ends derive the endpoint from a hash of the project path, and the bridge
+// gets its side from globalize_path("res://"), which Godot returns with every
+// symlink resolved. If the broker does not match that, the two bind and wait on
+// different socket names and never meet. macOS is where this bites, since /var
+// and /tmp are symlinks into /private and a scaffolded project lands under one.
+describe("project path normalisation", () => {
+  const isWindows = process.platform === "win32";
+
+  test("a symlinked project path resolves to the same path the bridge reports", () => {
+    if (isWindows) {
+      return; // creating a symlink needs elevation on Windows.
+    }
+    const base = mkdtempSync(join(tmpdir(), "conduit-realpath-"));
+    const real = join(base, "real-project");
+    const link = join(base, "linked-project");
+    mkdirSync(real);
+    symlinkSync(real, link);
+    try {
+      expect(realProjectPath(link)).toBe(realpathSync(real));
+      // And the endpoint that follows from it, which is the thing that actually
+      // has to agree.
+      const viaLink = resolveConfig({ project: link }, { CONDUIT_RUNTIME_DIR: "/tmp" } as NodeJS.ProcessEnv);
+      const viaReal = resolveConfig({ project: real }, { CONDUIT_RUNTIME_DIR: "/tmp" } as NodeJS.ProcessEnv);
+      expect(viaLink.editorEndpoint).toEqual(viaReal.editorEndpoint);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("a project directory that does not exist yet still resolves its symlinked prefix", () => {
+    // gd_project_scaffold creates the project it is pointed at, so the path is
+    // allowed not to exist when the broker starts.
+    if (isWindows) {
+      return;
+    }
+    const base = mkdtempSync(join(tmpdir(), "conduit-realpath-"));
+    const link = join(base, "linked-parent");
+    const real = join(base, "real-parent");
+    mkdirSync(real);
+    symlinkSync(real, link);
+    try {
+      expect(realProjectPath(join(link, "not-created-yet"))).toBe(join(realpathSync(real), "not-created-yet"));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("an ordinary absolute path is returned unchanged", () => {
+    const dir = mkdtempSync(join(tmpdir(), "conduit-realpath-"));
+    try {
+      expect(realProjectPath(dir)).toBe(realpathSync(dir));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

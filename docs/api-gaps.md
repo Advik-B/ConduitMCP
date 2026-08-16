@@ -474,6 +474,34 @@ The phase-7 eval therefore closes its default broker before connecting the
 the previous client disconnects, matching the reconnect guarantee of whitepaper
 section 7.5.
 
+### The project-path hash must be resolved, not just absolutised (macOS)
+
+Both ends derive the endpoint from a hash of the project path, and they have to
+agree without coordinating. The bridge's side comes from
+`globalize_path("res://")`, which Godot returns with every symlink resolved. The
+broker used `path.resolve`, which makes a path absolute but follows no symlinks.
+
+On Linux and Windows those agree in practice. On macOS `/var` and `/tmp` are
+symlinks into `/private`, so a project anywhere under either — a scaffold in
+`os.tmpdir()`, which is `/var/folders/.../T`, is the ordinary case — hashed
+differently on the two sides:
+
+```
+conduit-broker: connecting to editor bridge at .../conduit-editor-887d412f.sock
+Conduit (editor): listening on            .../conduit-editor-9b4033b7.sock
+```
+
+The editor was healthy and its extension had loaded; the broker was simply
+waiting on a name nothing would ever bind. `gd_editor_launch` timed out after
+45s with no other symptom. The phase 9 acceptance caught it the first time that
+suite ran on macOS.
+
+The broker now resolves the real path (`realProjectPath` in `broker/src/index.ts`),
+falling back to the deepest existing ancestor plus the remainder when the
+directory does not exist yet, which `gd_project_scaffold` relies on.
+`canonicalProjectKey` is deliberately not where this belongs: it is a pure string
+function mirrored in Rust, and the Rust side was already right.
+
 ### One broker at a time is not a Windows property, and it fails differently on Unix
 
 The constraint above is general. Every accept loop in `bridge/src/transport/ipc.rs`
