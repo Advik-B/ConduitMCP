@@ -328,7 +328,7 @@ export function registerSessionTools(
     async () => {
       try {
         const resolved = options.godot.resolve();
-        const presence = await editorPresence(manager);
+        const presence = await editorPresence(manager, options.projectPath);
         return textResult({
           binary: resolved?.path ?? null,
           source: resolved?.source ?? null,
@@ -365,7 +365,7 @@ export function registerSessionTools(
     },
     async (args) => {
       try {
-        const presence = await editorPresence(manager);
+        const presence = await editorPresence(manager, options.projectPath);
         const result = await installEngine({
           version: (args.version as string | undefined) ?? null,
           mono: args.mono === true,
@@ -430,7 +430,7 @@ export function registerSessionTools(
         // session. An editor the human opened is invisible to both guards above,
         // so ask the machine rather than assuming absence.
         if (args.force !== true) {
-          const advice = foreignEditorAdvice(await editorPresence(manager));
+          const advice = foreignEditorAdvice(await editorPresence(manager, options.projectPath));
           if (advice) {
             throw new BridgeError({
               code: "editor_running_unbridged",
