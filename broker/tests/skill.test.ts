@@ -71,6 +71,18 @@ function readSkillFile(relative: string): string {
   return readFileSync(join(skillDir, relative), "utf8");
 }
 
+/**
+ * The YAML frontmatter block of a skill file, or "" when there is none.
+ *
+ * Tolerant of both line endings on purpose. The repository has no
+ * .gitattributes, so a checkout with core.autocrlf=true delivers CRLF and a
+ * pattern anchored on \n alone silently matches nothing. That is not
+ * hypothetical: it passed here and failed the Windows CI leg.
+ */
+export function frontmatterOf(text: string): string {
+  return text.match(/^---\r?\n(.*?)\r?\n---/s)?.[1] ?? "";
+}
+
 describe("the shipped agent skill", () => {
   const registered = registeredToolNames();
 
@@ -90,8 +102,18 @@ describe("the shipped agent skill", () => {
   });
 
   test("the frontmatter carries a name and a description", () => {
-    const frontmatter = readSkillFile("SKILL.md").match(/^---\n(.*?)\n---/s)?.[1] ?? "";
+    const frontmatter = frontmatterOf(readSkillFile("SKILL.md"));
     expect(frontmatter).toContain("name: godot-conduit");
     expect(frontmatter).toContain("description:");
+  });
+
+  // Asserted against both forms rather than against whatever this checkout
+  // happens to hold, so the result does not depend on the developer's
+  // core.autocrlf. Reading the file and trusting a local pass is exactly what
+  // let the CRLF bug through.
+  test("the frontmatter parses under either line ending", () => {
+    const lf = readSkillFile("SKILL.md").replace(/\r\n/g, "\n");
+    expect(frontmatterOf(lf)).toContain("name: godot-conduit");
+    expect(frontmatterOf(lf.replace(/\n/g, "\r\n"))).toContain("name: godot-conduit");
   });
 });
