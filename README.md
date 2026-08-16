@@ -86,7 +86,7 @@ Claude Code (`.mcp.json` in your project, or `claude mcp add`):
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "conduit-mcp-server@0.6.0", "--project", "/absolute/path/to/your-godot-project"],
+      "args": ["-y", "conduit-mcp-server@0.7.0", "--project", "/absolute/path/to/your-godot-project"],
       "env": {
         "CONDUIT_AUTO_INSTALL": "1",
         "CONDUIT_ENABLE": "1"

@@ -522,7 +522,7 @@ the same slot the incumbent broker needs to reconnect through, so retrying hard
 actively harms the connection that works.
 
 This is also why the editor connection must not sit on the MCP startup path. It
-did until 0.6.0: `main()` awaited `connectEditor()` before creating the stdio
+did through 0.6.0: `main()` awaited `connectEditor()` before creating the stdio
 transport, so a broker started against a project that already had one left stdin
 unread for the call's ten-second deadline and the client reported a server
 timeout. `bun run handshake` (`tests/evals/startup_handshake.ts`) pins the fix,
