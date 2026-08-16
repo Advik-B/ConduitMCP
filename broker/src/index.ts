@@ -26,6 +26,7 @@ import { type CliOptions, applyTransportEnv, runCli } from "./cli.ts";
 import { type Endpoint, editorEndpoint, editorEndpointFromOverride, endpointKey } from "./endpoint.ts";
 import { envFlag, envInt } from "./env.ts";
 import { EventRing } from "./events.ts";
+import { editorPresence } from "./editor-presence.ts";
 import { EngineError, installEngine } from "./godot-install.ts";
 import { GodotResolver, engineDir } from "./godot-locate.ts";
 import { registerClassDbTools } from "./tools/classdb.ts";
@@ -85,6 +86,8 @@ interface Config {
   engineDir: string;
   engineSource: string | null;
   autoInstallGodot: boolean;
+  godotVersion: string | null;
+  godotMono: boolean;
   timeouts: Timeouts;
   auditLog: string | null;
   auditMaxBytes: number;
@@ -132,6 +135,8 @@ export function resolveConfig(cli: CliOptions, env: NodeJS.ProcessEnv = process.
     engineDir: cli.engineDir ?? env.CONDUIT_ENGINE_DIR ?? engineDir(env),
     engineSource: cli.engineSource ?? env.CONDUIT_ENGINE_SOURCE ?? null,
     autoInstallGodot: cli.autoInstallGodot ?? envFlag(env.CONDUIT_AUTO_INSTALL_GODOT),
+    godotVersion: cli.godotVersion ?? env.CONDUIT_GODOT_VERSION ?? null,
+    godotMono: cli.godotMono ?? envFlag(env.CONDUIT_GODOT_MONO),
     timeouts: {
       default: cli.timeoutMs ?? envInt("CONDUIT_TIMEOUT_MS", env.CONDUIT_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS,
       await: cli.evalTimeoutMs ?? envInt("CONDUIT_EVAL_TIMEOUT_MS", env.CONDUIT_EVAL_TIMEOUT_MS) ?? AWAIT_TIMEOUT_MS,
@@ -586,6 +591,50 @@ async function autoInstall(config: Config, status: AddonStatus, events: EventRin
   }
 }
 
+/**
+ * Install an engine at startup when the machine has none and
+ * CONDUIT_AUTO_INSTALL_GODOT allows it.
+ *
+ * Three guards, and each rules out a way this could be wasted or harmful work.
+ * An engine that already resolves needs nothing. An editor already connected is
+ * proof of an engine whatever the resolver thinks. And an editor running that
+ * the broker did not start means the human has Godot open without the opt-in,
+ * where downloading a second engine helps nobody and the fix is to relaunch the
+ * one they have.
+ *
+ * Unlike the addon, this is never repaired silently in the background: a
+ * 60-200 MB download is not something to discover after the fact, so it
+ * announces itself and records an event either way.
+ */
+async function autoInstallGodot(config: Config, manager: BridgeManager, events: EventRing): Promise<void> {
+  if (!config.autoInstallGodot || config.godot.resolve()) {
+    return;
+  }
+  const presence = await editorPresence(manager, config.projectPath);
+  if (presence.connected || presence.foreign.length > 0) {
+    log("skipping the engine install: a Godot editor is already running");
+    return;
+  }
+  events.record("engine_install_started", { engine_dir: config.engineDir, mono: config.godotMono });
+  log(`no Godot engine found; installing one into ${config.engineDir}`);
+  try {
+    const result = await installEngine({
+      version: config.godotVersion,
+      mono: config.godotMono,
+      engineDir: config.engineDir,
+      source: config.engineSource,
+    });
+    // Resolution cached "nothing found" before the install existed.
+    config.godot.reset();
+    log(`engine ready at ${result.binary}`);
+    events.record("engine_installed", { version: result.version, mono: result.mono, binary: result.binary });
+  } catch (error) {
+    const message = error instanceof EngineError ? `${error.code}: ${error.message}` : String(error);
+    log(`engine install failed: ${message}`);
+    events.record("engine_install_failed", { error: message });
+  }
+}
+
 async function main(): Promise<void> {
   // Parsing lives inside main, not at module scope: broker/tests/tools.test.ts
   // imports registerTools from this file, and module-scope parsing would read
@@ -747,6 +796,9 @@ async function main(): Promise<void> {
   if (config.autoInstall) {
     void autoInstall(config, addon, events);
   }
+  // Same reasoning, and the engine download is the larger of the two by two
+  // orders of magnitude, so it especially must not block the handshake.
+  void autoInstallGodot(config, manager, events);
 }
 
 if (import.meta.main) {

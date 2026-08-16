@@ -148,4 +148,41 @@ describe("resolveConfig precedence", () => {
   test("no project and no socket override is a clear error", () => {
     expect(() => resolveConfig({}, {})).toThrow(/--project, CONDUIT_PROJECT, or CONDUIT_SOCK/);
   });
+
+  test("unattended engine install is off unless asked for", () => {
+    expect(resolveConfig({}, env()).autoInstallGodot).toBe(false);
+    expect(resolveConfig({}, env({ CONDUIT_AUTO_INSTALL_GODOT: "1" })).autoInstallGodot).toBe(true);
+    // The negation has to beat a set variable, or a config file that can set a
+    // variable but not unset one could never turn the download off.
+    expect(resolveConfig({ autoInstallGodot: false }, env({ CONDUIT_AUTO_INSTALL_GODOT: "1" })).autoInstallGodot).toBe(
+      false,
+    );
+    expect(resolveConfig({}, env({ CONDUIT_AUTO_INSTALL_GODOT: "0" })).autoInstallGodot).toBe(false);
+  });
+
+  test("engine settings follow the same option-then-variable order", () => {
+    expect(resolveConfig({}, env()).engineDir).toContain("engines");
+    expect(resolveConfig({}, env({ CONDUIT_ENGINE_DIR: "/eng" })).engineDir).toBe("/eng");
+    expect(resolveConfig({ engineDir: "/cli" }, env({ CONDUIT_ENGINE_DIR: "/eng" })).engineDir).toBe("/cli");
+
+    expect(resolveConfig({}, env()).godotVersion).toBeNull();
+    expect(resolveConfig({ godotVersion: "4.7.1-stable" }, env()).godotVersion).toBe("4.7.1-stable");
+    expect(resolveConfig({}, env({ CONDUIT_GODOT_VERSION: "4.6-stable" })).godotVersion).toBe("4.6-stable");
+
+    expect(resolveConfig({}, env()).godotMono).toBe(false);
+    expect(resolveConfig({}, env({ CONDUIT_GODOT_MONO: "1" })).godotMono).toBe(true);
+    expect(resolveConfig({}, env()).engineSource).toBeNull();
+    expect(resolveConfig({}, env({ CONDUIT_ENGINE_SOURCE: "/local.zip" })).engineSource).toBe("/local.zip");
+  });
+
+  // --install-godot is a plain boolean rather than "--install-godot [version]".
+  // An optional-argument option lands in checkMissingValues' takesValue set,
+  // which would reject this correct command line as a missing value.
+  test("--install-godot may be followed by another option", () => {
+    expect(parseCli(["--install-godot", "--engine-dir", "/tmp/e"], VERSION)).toEqual({
+      installGodot: true,
+      engineDir: "/tmp/e",
+    });
+    expect(parseCli(["--install-godot", "--godot-mono"], VERSION)).toEqual({ installGodot: true, godotMono: true });
+  });
 });

@@ -193,6 +193,22 @@ variable only controls the unattended path, and calling `gd_engine_install`
 yourself works regardless. Outside a session, `conduit-mcp-server
 --install-godot` does the same thing and exits, and needs no `--project`.
 
+With the variable set, the broker installs an engine at startup only when all
+three of these hold, and each rules out a way the download would be wasted:
+
+- no engine resolves at all (`PATH`, then the per-platform locations, then
+  `CONDUIT_ENGINE_DIR`);
+- no editor bridge is connected, which would prove an engine exists whatever
+  resolution thinks;
+- no editor is running that the broker did not start, because that means Godot
+  is open without the opt-in and the fix is to relaunch it, not to download a
+  second engine.
+
+It runs after the MCP handshake, so a slow download never delays the client, and
+`--godot-version` and `--godot-mono` choose what it fetches. Progress and
+failure reach the agent as `engine_install_started`, `engine_installed`, and
+`engine_install_failed` events rather than only as log lines.
+
 ## Example
 
 A typical MCP client entry needs none of these:
