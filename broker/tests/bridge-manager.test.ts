@@ -139,8 +139,18 @@ describe("editor reconnect at startup", () => {
     return (server.address() as net.AddressInfo).port;
   }
 
-  async function settle(ms: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+  // Poll rather than sleeping a fixed amount: the assertion is about which
+  // interval the attempt lands in, not about how fast a loopback connect is on
+  // a given runner.
+  async function waitForConnected(manager: BridgeManager, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (manager.isEditorConnected()) {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return manager.isEditorConnected();
   }
 
   test("the first connect attempt happens immediately, not one interval later", async () => {
@@ -162,12 +172,12 @@ describe("editor reconnect at startup", () => {
     });
     const manager = managerFor(portOf(server));
     try {
-      // An interval far longer than the wait below: only an immediate first
-      // attempt can connect within it. This is what keeps the editor usable now
-      // that the handshake no longer waits for it.
+      // The interval is an order of magnitude beyond the wait, so connecting at
+      // all within it proves the first attempt did not wait for a tick. This is
+      // what keeps the editor usable now that the handshake no longer waits for
+      // it.
       manager.startEditorReconnect(60_000);
-      await settle(300);
-      expect(manager.isEditorConnected()).toBe(true);
+      expect(await waitForConnected(manager, 5_000)).toBe(true);
     } finally {
       manager.stopBackground();
       // server.close only fires once every accepted socket is gone, and the
