@@ -27,7 +27,12 @@ import { searchedLocations } from "../godot-locate.ts";
 import { BridgeError } from "../ipc-client.ts";
 import { textResult, toToolError } from "../tool-helpers.ts";
 
-const EDITOR_CONNECT_TIMEOUT_MS = 60_000;
+// Deliberately under the MCP SDK's 60s default request timeout, not equal to it.
+// At 60s the client gave up in the same breath as this tool, so the caller saw a
+// bare "Request timed out" and the editor_launch_failed error this tool was about
+// to return, log tail and all, was lost. A tool whose own budget matches its
+// caller's can never report why it failed.
+const EDITOR_CONNECT_TIMEOUT_MS = 45_000;
 const EDITOR_QUIT_TIMEOUT_MS = 15_000;
 const LOG_TAIL_BYTES = 4_096;
 

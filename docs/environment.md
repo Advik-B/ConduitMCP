@@ -218,11 +218,21 @@ A typical MCP client entry needs none of these:
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "conduit-mcp-server", "--project", "/absolute/path/to/your-godot-project"]
+      "args": ["-y", "conduit-mcp-server@0.7.0", "--project", "/absolute/path/to/your-godot-project"]
     }
   }
 }
 ```
+
+Pin the version rather than tracking the latest. An unpinned `npx` or `bunx`
+reaches the npm registry on every server start, which spends part of the startup
+budget your MCP client is holding a timeout over, and it lets the broker drift
+away from the addon installed in the project.
+
+Run one broker per project. The bridge serves a single client at a time, so a
+second entry for a project that already has a server connects and then waits for
+a handshake the bridge is not free to send. `gd_status` reports that case
+specifically rather than leaving it as a bare disconnection.
 
 A first-run entry that installs the addon and enables game-side tools:
 
@@ -231,7 +241,7 @@ A first-run entry that installs the addon and enables game-side tools:
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "conduit-mcp-server", "--project", "/absolute/path/to/your-godot-project"],
+      "args": ["-y", "conduit-mcp-server@0.7.0", "--project", "/absolute/path/to/your-godot-project"],
       "env": {
         "CONDUIT_AUTO_INSTALL": "1",
         "CONDUIT_ENABLE": "1"

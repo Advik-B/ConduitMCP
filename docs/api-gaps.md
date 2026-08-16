@@ -226,6 +226,23 @@ socket. The tradeoff is a full Godot startup per validation call (roughly
 0.3s for a trivial script, more for a larger project) rather than an
 in-process reload.
 
+That subprocess's exit status turned out not to be portable. `--check-only`
+exits non-zero on a parse error on Linux and Windows but exits **0** on macOS,
+and `gd_script_validate` decided the verdict from the status alone, so a script
+with a syntax error came back `valid: true` with no diagnostics. The phase 3
+acceptance check `script_validate_reports_broken_script` caught it the first
+time the acceptance suite ran on macOS, which is the whole reason that job is a
+three-platform matrix; on Linux alone it had looked correct for every release so
+far.
+
+The verdict now needs both signals: the subprocess must have exited clean *and*
+its output must not name a parse failure. The output test
+(`output_reports_script_error`) is deliberately narrower than
+`extract_diagnostics`, which counts any line containing "error" — right for
+listing what went wrong, wrong as a validity test, since one unrelated engine
+warning would then fail every valid script. The response also carries
+`exit_code` now, so a future divergence is visible without a CI round-trip.
+
 `EditorInterface::get_open_scenes()`/`get_scene_file_path()` do not reliably
 reflect a just-opened scene immediately after `open_scene_from_path` under
 headless `--editor` runs (both were tried as the readiness signal for
@@ -456,6 +473,110 @@ The phase-7 eval therefore closes its default broker before connecting the
 `--enable-editor-eval` broker. The listener accepts a new connection as soon as
 the previous client disconnects, matching the reconnect guarantee of whitepaper
 section 7.5.
+
+### The project-path hash must be resolved, not just absolutised (macOS)
+
+Both ends derive the endpoint from a hash of the project path, and they have to
+agree without coordinating. The bridge's side comes from
+`globalize_path("res://")`, which Godot returns with every symlink resolved. The
+broker used `path.resolve`, which makes a path absolute but follows no symlinks.
+
+On Linux and Windows those agree in practice. On macOS `/var` and `/tmp` are
+symlinks into `/private`, so a project anywhere under either — a scaffold in
+`os.tmpdir()`, which is `/var/folders/.../T`, is the ordinary case — hashed
+differently on the two sides:
+
+```
+conduit-broker: connecting to editor bridge at .../conduit-editor-887d412f.sock
+Conduit (editor): listening on            .../conduit-editor-9b4033b7.sock
+```
+
+The editor was healthy and its extension had loaded; the broker was simply
+waiting on a name nothing would ever bind. `gd_editor_launch` timed out after
+45s with no other symptom. The phase 9 acceptance caught it the first time that
+suite ran on macOS.
+
+The broker now resolves the real path (`realProjectPath` in `broker/src/index.ts`),
+falling back to the deepest existing ancestor plus the remainder when the
+directory does not exist yet, which `gd_project_scaffold` relies on.
+`canonicalProjectKey` is deliberately not where this belongs: it is a pure string
+function mirrored in Rust, and the Rust side was already right.
+
+### One broker at a time is not a Windows property, and it fails differently on Unix
+
+The constraint above is general. Every accept loop in `bridge/src/transport/ipc.rs`
+runs `accept()` and then serves that one connection to completion before
+accepting again: `accept_loop_local` for Unix sockets, `accept_loop_tcp`, and
+`accept_loop_pipe`. Only the symptom differs. A Windows pipe refuses the second
+connect outright, which is a fast, legible error. A Unix socket and a TCP
+listener both take the second connection into the backlog and then never write
+to it, so the second broker sits in `waitForHello` for its full five-second
+timeout and sees a bare timeout with no indication of the cause.
+
+Two consequences shaped the broker. `attemptEditorConnect` maps
+connected-then-silent onto its own `editor_busy` code, because that shape means
+"someone else is being served" and nothing else. And `startEditorReconnect`
+backs off geometrically on `editor_busy` only, not on an ordinary refusal: each
+attempt against a held bridge occupies the accept slot for five seconds, which is
+the same slot the incumbent broker needs to reconnect through, so retrying hard
+actively harms the connection that works.
+
+This is also why the editor connection must not sit on the MCP startup path. It
+did through 0.6.0: `main()` awaited `connectEditor()` before creating the stdio
+transport, so a broker started against a project that already had one left stdin
+unread for the call's ten-second deadline and the client reported a server
+timeout. `bun run handshake` (`tests/evals/startup_handshake.ts`) pins the fix,
+including against a listener that accepts and stays silent.
+
+### A closed socket is not the only way a peer dies
+
+Both ends used to treat the socket closing as the sole disconnect signal. That
+covers a crash: a process dying takes its descriptors with it whatever killed it,
+so EOF arrives whether the exit was clean, a SIGKILL, a segfault, or an OOM kill.
+It does not cover a peer that is still holding the descriptor while being unable
+to act on it, and there are four such cases.
+
+- **An orphaned broker.** The MCP SDK's `StdioServerTransport` listens for `data`
+  and `error` on stdin but never for its end, so the client closing stdin fires
+  nothing, and the connected bridge socket is a live handle that keeps the process
+  running. The broker now watches stdin itself and handles `SIGTERM`/`SIGINT`,
+  releasing its bridge connections before exiting.
+- **A suspended or wedged peer.** `SIGSTOP`, a debugger, a sleeping laptop. No FIN
+  is ever sent.
+- **An inherited descriptor.** `gd_editor_launch` spawns an engine from the
+  broker; any descriptor reaching that child outlives the broker.
+- **A peer that stops reading.** This one hung the bridge outright.
+  `write_framed_bytes` retried `WouldBlock` in a sleep loop whose only exit was
+  the stop flag, so a full socket buffer pinned the IO thread inside a single
+  frame, the serve function never returned, and `mark_listening` was never
+  reached. It now has a deadline.
+
+The heartbeat of whitepaper section 7.5 covers all four uniformly, in both
+directions, because it does not care why the peer went quiet. Two properties of
+its design are worth stating because they are easy to get wrong:
+
+Liveness frames are handled on the IO path at both ends, never through the
+dispatcher. A pong therefore attests to the transport and says nothing about the
+engine's main thread, which is deliberate: an export runs on a ten-minute budget
+and must not read as death. Per-request timeouts remain the check on main-thread
+responsiveness, and `game_breaked` still covers the debugger case.
+
+The deadline arms only once a peer has answered a ping. `PROTOCOL_VERSION` stays
+1, so a broker and bridge from adjacent releases still interoperate; without the
+arming rule, a new bridge would disconnect an older broker every twenty seconds
+for not speaking a frame that did not exist when it was built. An unanswering
+peer degrades to close-only detection, which is exactly what it had before.
+
+Covered by `liveness` in `bridge/src/transport/ipc.rs`, `BridgeClient liveness`
+in `broker/tests/ipc-client.test.ts`, and the orphan case in `bun run handshake`.
+The Rust and TypeScript timings are scaled down under test so the assertions cost
+milliseconds rather than a half-minute each.
+
+One limitation remains on Windows. `serve_split` writes with blocking calls,
+which cannot carry the deadline `write_framed_bytes` has, so a peer that stops
+reading while the bridge has frames to write can still park the writer thread for
+as long as the OS pipe buffer allows. The idle path, which is where the heartbeat
+lives, is unaffected.
 
 ### gd_play from a headless editor remains unproven
 

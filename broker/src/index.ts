@@ -6,6 +6,7 @@
 // Hard rule: nothing but MCP protocol frames may reach stdout. All broker
 // logging goes to stderr (whitepaper section 7.1).
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -95,6 +96,43 @@ interface Config {
 }
 
 /**
+ * The project path as the bridge will see it: absolute, and with every symlink
+ * in it resolved.
+ *
+ * `path.resolve` alone is not enough. Both ends derive the endpoint from a hash
+ * of this path, and the bridge's side comes from `globalize_path("res://")`,
+ * which Godot returns fully resolved. On macOS `/var` and `/tmp` are symlinks
+ * into `/private`, so a project under either (a scaffold in `os.tmpdir()`, for
+ * instance) hashed differently on the two sides and the broker sat waiting on a
+ * socket name nothing would ever bind. `canonicalProjectKey` cannot fix this:
+ * it is a pure string function mirrored in Rust, and the Rust side is already
+ * correct.
+ *
+ * A path that does not exist yet is not an error: `gd_project_scaffold` creates
+ * the project it is pointed at. Resolve the deepest ancestor that does exist and
+ * keep the rest, which is enough for the symlinks that matter here, all of which
+ * sit at the root.
+ */
+export function realProjectPath(raw: string): string {
+  const resolved = path.resolve(raw);
+  const pending: string[] = [];
+  let current = resolved;
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current);
+      return pending.length === 0 ? real : path.join(real, ...pending);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return resolved;
+      }
+      pending.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
  * Turn parsed arguments into the broker's configuration. Command-line options
  * take precedence over environment variables (whitepaper section 15), which is
  * why every `??` chain below reads option first: an option is undefined when it
@@ -110,8 +148,8 @@ export function resolveConfig(cli: CliOptions, env: NodeJS.ProcessEnv = process.
   // MCP client spawns the broker with an arbitrary cwd, so a relative --project
   // would otherwise land somewhere unpredictable. It also makes the derived hash
   // agree with the bridge, which builds its side from globalize_path("res://")
-  // and is therefore always absolute.
-  const projectPath = rawProjectPath ? path.resolve(rawProjectPath) : null;
+  // and is therefore always absolute and fully resolved.
+  const projectPath = rawProjectPath ? realProjectPath(rawProjectPath) : null;
   const override = env.CONDUIT_SOCK;
   const resolvedEndpoint: Endpoint | null = override
     ? editorEndpointFromOverride(override)
@@ -693,19 +731,6 @@ async function main(): Promise<void> {
     events,
   });
 
-  // An absent editor is not fatal: gd_project_scaffold and gd_editor_launch
-  // exist precisely for sessions that start before any editor does (section 8),
-  // and the background reconnect adopts an editor whenever one appears.
-  log(`connecting to editor bridge at ${endpointKey(config.editorEndpoint)}`);
-  try {
-    const hello = await manager.connectEditor();
-    log(`connected to editor bridge (engine ${hello.engine_version})`);
-  } catch {
-    log(`editor bridge not available yet; continuing without it. ${manager.editorHint()}`);
-  }
-  manager.startEditorReconnect();
-  manager.startGameDiscovery();
-
   // Detection is filesystem-only and cheap, so it runs before the transport is
   // up. Installing is not: it may reach the network, so it waits until after
   // server.connect below rather than delaying the MCP handshake.
@@ -790,6 +815,40 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await baseServer.connect(transport);
   log("MCP server ready on stdio");
+
+  // Everything below runs after the handshake, and the editor connection is part
+  // of that on purpose. An absent editor is not fatal: gd_project_scaffold and
+  // gd_editor_launch exist precisely for sessions that start before any editor
+  // does (section 8), and the background reconnect adopts one whenever it
+  // appears. Awaiting it here instead would hold stdin unread for the length of
+  // its retry deadline, which is how a client that is waiting on the initialize
+  // response reports the server as having timed out. The endpoint may also be
+  // held by another broker, where every attempt costs a full hello timeout, so
+  // this is the slowest thing the broker can do at startup, not the fastest.
+  log(`connecting to editor bridge at ${endpointKey(config.editorEndpoint)}`);
+  manager.startEditorReconnect();
+  manager.startGameDiscovery();
+
+  // Leave when the MCP client does. The SDK's stdio transport listens for data
+  // and errors on stdin but not for its end, so nothing else notices the client
+  // closing it, and the connected bridge socket is a live handle that keeps this
+  // process running long after it has anyone to serve. An orphan like that still
+  // holds the bridge's only accept slot, which is what makes the next broker
+  // unable to attach at all.
+  let leaving = false;
+  const leave = (why: string): void => {
+    if (leaving) {
+      return;
+    }
+    leaving = true;
+    log(`${why}; releasing the bridge connections and exiting`);
+    manager.shutdown();
+    process.exit(0);
+  };
+  process.stdin.on("end", () => leave("the MCP client closed stdin"));
+  process.stdin.on("close", () => leave("stdin closed"));
+  process.on("SIGTERM", () => leave("SIGTERM"));
+  process.on("SIGINT", () => leave("SIGINT"));
 
   // After the handshake, so a slow or failing download never delays the client.
   // Progress reaches the agent through the event ring and gd_status.

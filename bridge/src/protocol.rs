@@ -40,6 +40,27 @@ impl Hello {
     }
 }
 
+/// Liveness frames, id-less and shaped `{"ping": seq}` and `{"pong": seq}`.
+///
+/// Both ends send both: a socket staying open proves only that some process
+/// holds the descriptor, not that the peer is still able to act on it, so each
+/// end measures inbound silence and asks. The keys are distinct so neither end
+/// can mistake the peer's ping for an answer to its own, and both directions
+/// carry the sequence back unchanged, which is what makes a reply attributable
+/// to a particular ping rather than to any traffic at all.
+///
+/// These are not commands. They are answered on the IO path at both ends, so a
+/// pong says the peer's transport is live and says nothing about whether the
+/// engine's main thread is servicing tools; a long export must not read as
+/// death. Per-request timeouts remain the check on that (docs/api-gaps.md).
+pub fn ping_payload(seq: u64) -> Vec<u8> {
+    format!("{{\"ping\":{seq}}}").into_bytes()
+}
+
+pub fn pong_payload(seq: u64) -> Vec<u8> {
+    format!("{{\"pong\":{seq}}}").into_bytes()
+}
+
 /// An unsolicited event frame, id-less and shaped `{"event": ..., "data": ...}`
 /// (whitepaper section 7.5). The bridge emits these to tell the broker about
 /// things that happen without being asked, such as a debug session breaking.

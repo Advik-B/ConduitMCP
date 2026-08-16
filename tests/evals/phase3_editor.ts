@@ -244,10 +244,18 @@ async function runChecks(client: Client): Promise<void> {
     template_source: 'extends Node\nfunc broken(:\n\tpass\n',
   });
   const brokenResult = await callJson(client, "gd_script_validate", { path: "res://broken.gd" });
+  const brokenOk =
+    brokenResult.valid === false && Array.isArray(brokenResult.diagnostics) && brokenResult.diagnostics.length > 0;
   record(
     "script_validate_reports_broken_script",
-    brokenResult.valid === false && Array.isArray(brokenResult.diagnostics) && brokenResult.diagnostics.length > 0,
-    `valid=${brokenResult.valid}, ${brokenResult.diagnostics?.length ?? 0} diagnostic(s), without ever calling gd_play`,
+    brokenOk,
+    // The whole payload on failure, not just the verdict: this check failed on
+    // macOS with valid=true and no way to tell from the log whether the
+    // subprocess had exited clean or produced no diagnostics at all, which cost
+    // a CI round-trip to find out.
+    brokenOk
+      ? `valid=${brokenResult.valid}, ${brokenResult.diagnostics.length} diagnostic(s), without ever calling gd_play`
+      : `expected an invalid verdict with diagnostics, got ${JSON.stringify(brokenResult)}`,
   );
 
   const validResult = await callJson(client, "gd_script_validate", { path: "res://added_script.gd" });

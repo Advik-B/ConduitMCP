@@ -19,9 +19,11 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use interprocess::local_socket::traits::{Listener as _, Stream as _};
@@ -33,8 +35,38 @@ use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, Strea
 
 #[cfg(windows)]
 use crate::protocol::write_frame;
-use crate::protocol::{BridgeError, Command, FrameDecoder, Response};
+use crate::protocol::{ping_payload, pong_payload, BridgeError, Command, FrameDecoder, Response};
 use crate::transport::status::LinkStatus;
+
+/// How long the peer may be silent before we ask whether it is still there.
+#[cfg(not(test))]
+const PING_AFTER: Duration = Duration::from_secs(5);
+
+/// How long the peer may be silent before we stop believing in it. Three missed
+/// pings plus margin. Reaching it drops the connection, which is what returns
+/// the listener to Listening and frees the accept slot for another broker; a
+/// bridge serves one client at a time, so holding a dead one is not a cosmetic
+/// problem (docs/api-gaps.md).
+#[cfg(not(test))]
+const LIVENESS_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a single frame may take to leave, when the peer has stopped reading
+/// and the socket buffer is full. Without this the non-blocking write retries on
+/// WouldBlock forever and pins the IO thread, so the serve function never
+/// returns and the accept slot is never freed.
+#[cfg(not(test))]
+const WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(20);
+
+// Scaled down under test, and only under test: the behaviour being asserted is
+// which event happens and in what order, not how many seconds it waits, and the
+// shipped values would make each of these a half-minute test. The ratios are
+// kept so the ordering the tests rely on is the shipped ordering.
+#[cfg(test)]
+const PING_AFTER: Duration = Duration::from_millis(100);
+#[cfg(test)]
+const LIVENESS_TIMEOUT: Duration = Duration::from_millis(400);
+#[cfg(test)]
+const WRITE_STALL_TIMEOUT: Duration = Duration::from_millis(400);
 
 /// The facts that decide whether the command listener may bind. Kept as plain
 /// booleans so the decision is pure and fully testable; the plugin fills them
@@ -494,6 +526,7 @@ fn serve_nonblocking<S: NbStream>(
 
     let mut decoder = FrameDecoder::new();
     let mut read_buf = [0u8; 8192];
+    let mut liveness = Liveness::new();
 
     while !stop.load(Ordering::SeqCst) {
         let mut did_work = false;
@@ -501,6 +534,9 @@ fn serve_nonblocking<S: NbStream>(
         match stream.read(&mut read_buf) {
             Ok(0) => break, // peer closed
             Ok(n) => {
+                // Any inbound byte proves the peer is acting, so a busy link is
+                // never pinged; only genuine silence is.
+                liveness.saw_input();
                 decoder.push(&read_buf[..n]);
                 did_work = true;
             }
@@ -516,8 +552,18 @@ fn serve_nonblocking<S: NbStream>(
             match decoder.next_frame() {
                 Ok(Some(frame)) => {
                     did_work = true;
-                    if !handle_inbound_frame_nb(&frame, inbound_tx, &mut stream, stop) {
-                        return;
+                    match classify_inbound(&frame) {
+                        Inbound::Ping(seq) => {
+                            if write_framed_bytes(&mut stream, &pong_payload(seq), stop).is_err() {
+                                return;
+                            }
+                        }
+                        Inbound::Pong => liveness.saw_pong(),
+                        Inbound::Other => {
+                            if !handle_inbound_frame_nb(&frame, inbound_tx, &mut stream, stop) {
+                                return;
+                            }
+                        }
                     }
                 }
                 Ok(None) => break,
@@ -546,8 +592,100 @@ fn serve_nonblocking<S: NbStream>(
         }
 
         if !did_work {
-            thread::sleep(Duration::from_micros(200));
+            match liveness.due() {
+                Due::Dead => {
+                    eprintln!(
+                        "conduit: broker silent for {}s, dropping the connection so another can attach",
+                        LIVENESS_TIMEOUT.as_secs()
+                    );
+                    break;
+                }
+                Due::Ping(seq) => {
+                    if write_framed_bytes(&mut stream, &ping_payload(seq), stop).is_err() {
+                        return;
+                    }
+                }
+                Due::Nothing => thread::sleep(Duration::from_micros(200)),
+            }
         }
+    }
+}
+
+/// What an inbound frame is, before it costs a serde command parse. Liveness
+/// frames are answered or counted on the IO thread and never reach the
+/// dispatcher, so a busy main thread cannot make a live peer look dead.
+enum Inbound {
+    Ping(u64),
+    Pong,
+    Other,
+}
+
+fn classify_inbound(frame: &[u8]) -> Inbound {
+    // Cheap reject first: every command frame carries an id and a tool, so the
+    // common case never runs this parse.
+    if !frame.starts_with(b"{\"ping\":") && !frame.starts_with(b"{\"pong\":") {
+        return Inbound::Other;
+    }
+    match serde_json::from_slice::<serde_json::Value>(frame) {
+        Ok(value) => match (value.get("ping").and_then(serde_json::Value::as_u64), value.get("pong")) {
+            (Some(seq), _) => Inbound::Ping(seq),
+            (None, Some(_)) => Inbound::Pong,
+            _ => Inbound::Other,
+        },
+        Err(_) => Inbound::Other,
+    }
+}
+
+/// Whether the peer owes us a sign of life, and whether it has run out of time.
+struct Liveness {
+    last_input: Instant,
+    last_ping: Option<Instant>,
+    seq: u64,
+    // The deadline is armed only once the peer has answered a ping. A broker too
+    // old to know the frame would otherwise be disconnected every twenty seconds
+    // for speaking the protocol it was built against, so an unanswering peer
+    // degrades to the previous behaviour instead of being killed.
+    armed: bool,
+}
+
+enum Due {
+    Nothing,
+    Ping(u64),
+    Dead,
+}
+
+impl Liveness {
+    fn new() -> Self {
+        Liveness { last_input: Instant::now(), last_ping: None, seq: 0, armed: false }
+    }
+
+    fn saw_input(&mut self) {
+        self.last_input = Instant::now();
+        self.last_ping = None;
+    }
+
+    fn saw_pong(&mut self) {
+        self.armed = true;
+        self.saw_input();
+    }
+
+    fn due(&mut self) -> Due {
+        let silent = self.last_input.elapsed();
+        if self.armed && silent >= LIVENESS_TIMEOUT {
+            return Due::Dead;
+        }
+        if silent < PING_AFTER {
+            return Due::Nothing;
+        }
+        // One ping per interval rather than one per idle pass, so a peer that is
+        // merely quiet is asked a handful of times before the deadline, not
+        // thousands.
+        if self.last_ping.is_some_and(|sent| sent.elapsed() < PING_AFTER) {
+            return Due::Nothing;
+        }
+        self.seq += 1;
+        self.last_ping = Some(Instant::now());
+        Due::Ping(self.seq)
     }
 }
 
@@ -580,11 +718,22 @@ fn serve_split(
 
     let reader_done = Arc::new(AtomicBool::new(false));
     let (local_tx, local_rx) = crossbeam_channel::unbounded::<Response>();
+    // Raw pre-framed payloads the reader needs written: only one thread may write
+    // the pipe, so a pong the reader owes goes through the writer like everything
+    // else. Separate from local_tx because a pong is not a Response.
+    let (raw_tx, raw_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+    // Liveness state the reader observes and the writer acts on, since the read
+    // and write halves are on different threads here.
+    let last_input = Arc::new(AtomicU64::new(0));
+    let armed = Arc::new(AtomicBool::new(false));
+    let epoch = Instant::now();
 
     let reader = {
         let inbound_tx = inbound_tx.clone();
         let stop = Arc::clone(stop);
         let reader_done = Arc::clone(&reader_done);
+        let last_input = Arc::clone(&last_input);
+        let armed = Arc::clone(&armed);
         thread::Builder::new()
             .name("conduit-ipc-read".to_string())
             .spawn(move || {
@@ -594,12 +743,23 @@ fn serve_split(
                     match recv.read(&mut read_buf) {
                         Ok(0) => break,
                         Ok(n) => {
+                            last_input.store(epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
                             decoder.push(&read_buf[..n]);
                             loop {
                                 match decoder.next_frame() {
                                     Ok(Some(frame)) => {
-                                        if !route_inbound_frame(&frame, &inbound_tx, &local_tx) {
-                                            break 'outer;
+                                        match classify_inbound(&frame) {
+                                            Inbound::Ping(seq) => {
+                                                if raw_tx.send(pong_payload(seq)).is_err() {
+                                                    break 'outer;
+                                                }
+                                            }
+                                            Inbound::Pong => armed.store(true, Ordering::Relaxed),
+                                            Inbound::Other => {
+                                                if !route_inbound_frame(&frame, &inbound_tx, &local_tx) {
+                                                    break 'outer;
+                                                }
+                                            }
                                         }
                                     }
                                     Ok(None) => break,
@@ -621,9 +781,19 @@ fn serve_split(
 
     // Writer (this thread): drain io-generated responses first, then dispatcher
     // responses, then events, all with blocking writes.
+    let mut last_ping: Option<Instant> = None;
+    let mut ping_seq = 0u64;
     while !stop.load(Ordering::SeqCst) {
         let mut did_work = false;
         let mut broken = false;
+
+        while let Ok(payload) = raw_rx.try_recv() {
+            did_work = true;
+            if write_frame(&mut send, &payload).is_err() {
+                broken = true;
+                break;
+            }
+        }
 
         for source in [&local_rx, outbound_rx] {
             while let Ok(response) = source.try_recv() {
@@ -654,10 +824,33 @@ fn serve_split(
         // to flush. The reader thread is detached (not joined) so a stop while it
         // is parked in a blocking read does not hang the accept thread; it ends
         // when the peer disconnects or the process exits (see docs/api-gaps.md).
-        if reader_done.load(Ordering::SeqCst) && local_rx.is_empty() && outbound_rx.is_empty() && event_rx.is_empty() {
+        if reader_done.load(Ordering::SeqCst)
+            && raw_rx.is_empty()
+            && local_rx.is_empty()
+            && outbound_rx.is_empty()
+            && event_rx.is_empty()
+        {
             break;
         }
         if !did_work {
+            // Same liveness contract as serve_nonblocking, split across the two
+            // threads: the reader stamps inbound, this thread asks and decides.
+            let silent = epoch.elapsed().saturating_sub(Duration::from_millis(last_input.load(Ordering::Relaxed)));
+            if armed.load(Ordering::Relaxed) && silent >= LIVENESS_TIMEOUT {
+                eprintln!(
+                    "conduit: broker silent for {}s, dropping the connection so another can attach",
+                    LIVENESS_TIMEOUT.as_secs()
+                );
+                break;
+            }
+            if silent >= PING_AFTER && !last_ping.is_some_and(|sent| sent.elapsed() < PING_AFTER) {
+                ping_seq += 1;
+                last_ping = Some(Instant::now());
+                if write_frame(&mut send, &ping_payload(ping_seq)).is_err() {
+                    break;
+                }
+                continue;
+            }
             thread::sleep(Duration::from_micros(500));
         }
     }
@@ -734,14 +927,31 @@ fn write_framed_bytes<S: NbStream>(stream: &mut S, payload: &[u8], stop: &Arc<At
     framed.extend_from_slice(payload);
 
     let mut written = 0;
+    // A peer that stops reading is as dead to us as one that closed, and without
+    // a deadline the WouldBlock retry below spins until the process exits: the
+    // serve function never returns, so the accept slot is never freed and no
+    // other broker can ever attach. The clock starts on the first stall and is
+    // reset by any progress, so a slow but live peer is not penalised for the
+    // size of the frame.
+    let mut stalled_since: Option<Instant> = None;
     while written < framed.len() {
         if stop.load(Ordering::SeqCst) {
             return Err(std::io::Error::new(ErrorKind::Interrupted, "listener stopping"));
         }
         match stream.write(&framed[written..]) {
             Ok(0) => return Err(std::io::Error::new(ErrorKind::WriteZero, "socket closed")),
-            Ok(n) => written += n,
+            Ok(n) => {
+                written += n;
+                stalled_since = None;
+            }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                let since = stalled_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= WRITE_STALL_TIMEOUT {
+                    return Err(std::io::Error::new(
+                        ErrorKind::TimedOut,
+                        "peer stopped reading; abandoning the frame and the connection",
+                    ));
+                }
                 thread::sleep(Duration::from_micros(100));
             }
             Err(err) if err.kind() == ErrorKind::Interrupted => {}
@@ -889,5 +1099,179 @@ mod tests {
         let p = tcp_port_for("conduit-editor-deadbeef");
         assert_eq!(p, tcp_port_for("conduit-editor-deadbeef"));
         assert!(p >= 49152);
+    }
+
+    /// Liveness over loopback TCP, which every platform can run, so the Unix
+    /// socket and Windows pipe transports are covered by the same assertions
+    /// through the shared serve model.
+    mod liveness {
+        use super::*;
+        use crate::protocol::FrameDecoder;
+        use crate::transport::status::LinkState;
+        use std::net::TcpStream;
+
+        struct Harness {
+            _listener: Listener,
+            status: LinkStatus,
+            addr: SocketAddr,
+            // Held so the channels stay open for the listener's lifetime.
+            _inbound_rx: Receiver<Command>,
+            _outbound_tx: Sender<Response>,
+            event_tx: Sender<Vec<u8>>,
+        }
+
+        fn hello_bytes() -> Vec<u8> {
+            crate::protocol::Hello {
+                role: "editor".into(),
+                protocol_version: crate::protocol::PROTOCOL_VERSION,
+                bridge_version: "0.0.0".into(),
+                engine_version: "4.4.0".into(),
+                project_path: "/tmp/project".into(),
+                pid: 1,
+            }
+            .to_frame_payload()
+        }
+
+        /// Bind and release a port so the listener under test gets one nothing
+        /// else is on. A racy pick is still better than a fixed port, which two
+        /// concurrent cargo test threads would collide on every run.
+        fn free_port() -> u16 {
+            let probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("probe bind");
+            probe.local_addr().expect("probe addr").port()
+        }
+
+        fn start() -> Harness {
+            let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, free_port()));
+            let (inbound_tx, _inbound_rx) = crossbeam_channel::bounded::<Command>(16);
+            let (_outbound_tx, outbound_rx) = crossbeam_channel::unbounded::<Response>();
+            let (event_tx, event_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+            let status = LinkStatus::default();
+            let listener = Listener::spawn(
+                Endpoint { display: addr.to_string(), kind: EndpointKind::Tcp(addr) },
+                hello_bytes(),
+                inbound_tx,
+                outbound_rx,
+                event_rx,
+                status.clone(),
+            )
+            .expect("listener binds");
+            Harness { _listener: listener, status, addr, _inbound_rx, _outbound_tx, event_tx }
+        }
+
+        /// Connect and consume the hello, leaving the stream positioned on the
+        /// first frame the bridge sends afterwards.
+        fn connect_and_greet(addr: SocketAddr) -> (TcpStream, FrameDecoder) {
+            let mut stream = TcpStream::connect(addr).expect("connect");
+            stream.set_read_timeout(Some(Duration::from_secs(5))).expect("read timeout");
+            let mut decoder = FrameDecoder::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                if let Ok(Some(frame)) = decoder.next_frame() {
+                    let value: serde_json::Value = serde_json::from_slice(&frame).expect("json frame");
+                    assert!(value.get("hello").is_some(), "first frame should be the hello: {value}");
+                    return (stream, decoder);
+                }
+                let n = stream.read(&mut buf).expect("read hello");
+                assert_ne!(n, 0, "closed before hello");
+                decoder.push(&buf[..n]);
+            }
+        }
+
+        fn wait_for_state(status: &LinkStatus, want: LinkState, within: Duration) -> bool {
+            let deadline = Instant::now() + within;
+            while Instant::now() < deadline {
+                if status.snapshot().state == want {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            status.snapshot().state == want
+        }
+
+        #[test]
+        fn a_peer_that_stops_answering_is_dropped_and_the_slot_is_freed() {
+            // The reported failure: the socket stays open, so no EOF ever
+            // arrives, and without liveness the bridge stays Connected forever
+            // and no second broker can ever attach.
+            let h = start();
+            let (mut client, mut decoder) = connect_and_greet(h.addr);
+            assert!(wait_for_state(&h.status, LinkState::Connected, Duration::from_secs(2)));
+
+            // Answer exactly one ping. That arms the deadline, proving the peer
+            // does speak the protocol, and then we go silent while holding the
+            // socket open.
+            let mut buf = [0u8; 4096];
+            let mut answered = false;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !answered && Instant::now() < deadline {
+                if let Ok(Some(frame)) = decoder.next_frame() {
+                    let value: serde_json::Value = serde_json::from_slice(&frame).expect("json frame");
+                    if let Some(seq) = value.get("ping").and_then(serde_json::Value::as_u64) {
+                        crate::protocol::write_frame(&mut client, &crate::protocol::pong_payload(seq))
+                            .expect("write pong");
+                        answered = true;
+                    }
+                    continue;
+                }
+                let n = client.read(&mut buf).expect("read ping");
+                assert_ne!(n, 0, "closed before pinging");
+                decoder.push(&buf[..n]);
+            }
+            assert!(answered, "the bridge never pinged a silent peer");
+
+            assert!(
+                wait_for_state(&h.status, LinkState::Listening, LIVENESS_TIMEOUT * 4),
+                "a silent peer should be dropped, leaving the listener free"
+            );
+
+            // The property that actually matters: the accept slot is usable
+            // again. A bridge serves one client at a time, so a link wrongly
+            // held Connected locks every future broker out.
+            let (_second, _) = connect_and_greet(h.addr);
+            assert!(wait_for_state(&h.status, LinkState::Connected, Duration::from_secs(2)));
+            drop(client);
+        }
+
+        #[test]
+        fn a_peer_that_never_answers_a_ping_is_left_alone() {
+            // Compatibility rule: a broker too old to know the frame must not be
+            // disconnected every LIVENESS_TIMEOUT for speaking the protocol it
+            // was built against. The deadline arms only after a pong.
+            let h = start();
+            let (client, _decoder) = connect_and_greet(h.addr);
+            assert!(wait_for_state(&h.status, LinkState::Connected, Duration::from_secs(2)));
+
+            thread::sleep(LIVENESS_TIMEOUT * 3);
+            assert_eq!(
+                h.status.snapshot().state,
+                LinkState::Connected,
+                "a peer that never pongs should stay connected, not be killed for silence"
+            );
+            drop(client);
+        }
+
+        #[test]
+        fn a_peer_that_stops_reading_does_not_pin_the_io_thread() {
+            // The write-side half of the same problem. Without a deadline on the
+            // WouldBlock retry, filling the socket buffer parks the IO thread
+            // inside one frame forever, so the serve function never returns and
+            // mark_listening is never reached.
+            let h = start();
+            let (client, _decoder) = connect_and_greet(h.addr);
+            assert!(wait_for_state(&h.status, LinkState::Connected, Duration::from_secs(2)));
+
+            // Never read again, and give the bridge far more than any socket
+            // buffer can hold.
+            let payload = vec![b'x'; 1024 * 1024];
+            for _ in 0..64 {
+                h.event_tx.send(payload.clone()).expect("queue event");
+            }
+
+            assert!(
+                wait_for_state(&h.status, LinkState::Listening, WRITE_STALL_TIMEOUT * 8),
+                "a peer that stopped reading should be dropped, not pin the IO thread"
+            );
+            drop(client);
+        }
     }
 }
