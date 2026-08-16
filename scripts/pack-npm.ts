@@ -9,7 +9,7 @@
 // and the version is stamped into a package.json generated here rather than
 // committed. Run with `bun scripts/pack-npm.ts`.
 
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -117,6 +117,24 @@ on \`PATH\` and in the usual install locations by itself.
 Editor-side tools need no opt-in: the broker finds any running editor for the
 configured project automatically.
 
+## Teach the agent the tool surface
+
+This package ships an agent skill, \`skills/godot-conduit/\`, that front-loads the
+things an agent otherwise spends calls rediscovering: which of the two bridges
+each tool routes to, edit-time versus runtime node paths, the tagged Variant
+encoding, what each error code means, and the ordering rules that produce dead
+ends. It is optional, and worth installing.
+
+Copy the directory into your project's \`.claude/skills/\`:
+
+\`\`\`
+cp -r node_modules/${PACKAGE_NAME}/skills/godot-conduit .claude/skills/
+\`\`\`
+
+With \`npx\` there is no \`node_modules\` to copy from; take it from
+[the repository](${REPO_URL}/tree/master/skills/godot-conduit) instead. Keep it on
+the same version as the server: it documents that version's tool surface.
+
 ## Requirements
 
 - Godot 4.4 or newer.
@@ -192,13 +210,21 @@ async function main(): Promise<void> {
     license: "MIT",
     type: "module",
     bin: { [PACKAGE_NAME]: "index.js" },
-    files: ["index.js", "README.md", "LICENSE"],
+    files: ["index.js", "README.md", "LICENSE", "skills"],
     engines: { node: ">=20" },
   };
   writeFileSync(join(outDir, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
   copyFileSync(join(repoRoot, "LICENSE"), join(outDir, "LICENSE"));
   writeFileSync(join(outDir, "README.md"), readme(version));
+
+  // The agent skill ships with the server so a consumer gets both halves of what
+  // makes the tool surface usable. evals/ is a tuning artifact for the skill, not
+  // part of the skill, and skill tooling excludes it too.
+  cpSync(join(repoRoot, "skills"), join(outDir, "skills"), {
+    recursive: true,
+    filter: (source) => !source.split(/[\\/]/).includes("evals"),
+  });
 
   console.log(`staged ${PACKAGE_NAME} ${version} in ${outDir}`);
   // Tagged releases publish from the release workflow over OIDC. This manual

@@ -1,0 +1,58 @@
+[
+  {
+    "query": "The player falls through the platform in level_2.tscn. Work out why and fix it.",
+    "should_trigger": true
+  },
+  {
+    "query": "Add a coin pickup to my Godot scene, wire up its collected signal, and make sure the script compiles.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run my game, hold right for about a second, and show me a screenshot of where the character ends up.",
+    "should_trigger": true
+  },
+  {
+    "query": "Set a breakpoint in take_damage and tell me what health actually is when the enemy connects.",
+    "should_trigger": true
+  },
+  {
+    "query": "Build me a main menu scene with a start button that loads level_1, and save it.",
+    "should_trigger": true
+  },
+  {
+    "query": "The enemy spawner produces way too many enemies at once. Tune the spawn interval until it feels right, then make the change stick.",
+    "should_trigger": true
+  },
+  {
+    "query": "Import this PNG into my Godot project and set it as the player sprite's texture.",
+    "should_trigger": true
+  },
+  {
+    "query": "Check whether the jump height in my platformer at runtime actually matches what the inspector shows.",
+    "should_trigger": true
+  },
+  {
+    "query": "Write a Python script that renames every file in a folder to lowercase.",
+    "should_trigger": false
+  },
+  {
+    "query": "In Unity, how do I make a rigidbody bounce off a wall without losing speed?",
+    "should_trigger": false
+  },
+  {
+    "query": "Explain the difference between a quaternion and Euler angles.",
+    "should_trigger": false
+  },
+  {
+    "query": "Refactor this TypeScript module to use async/await instead of promise chains.",
+    "should_trigger": false
+  },
+  {
+    "query": "What does the @onready annotation do in GDScript?",
+    "should_trigger": false
+  },
+  {
+    "query": "Set up a GitHub Actions workflow that runs my repo's linter on every pull request.",
+    "should_trigger": false
+  }
+]

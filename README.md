@@ -111,6 +111,10 @@ Editor-side tools need no opt-in: the broker finds any running editor for the co
 
 Keep the broker and the addon on the same version. The npm package and the addon zip are released together from the same tag, so an `X.Y.Z` addon expects an `X.Y.Z` broker; pinning the version in `args` is the simplest way to keep them in step.
 
+## Teach the agent the tool surface
+
+Optional, and worth doing. `skills/godot-conduit/` is an agent skill that front-loads what an agent otherwise spends calls rediscovering: which of the two bridges each tool routes to, edit-time versus runtime node paths, the tagged Variant encoding, what each error code means, and the ordering rules that produce dead ends (install the addon with no editor running, validate a script before attaching it, save before playing). It ships inside the npm package as well as living here, so `cp -r node_modules/conduit-mcp-server/skills/godot-conduit .claude/skills/` installs it for a local install, and copying `skills/godot-conduit/` out of this repository does the same for `npx` users. Keep it on the same version as the broker; it documents that version's tools.
+
 Two alternatives to npm, if you want them:
 
 - **Standalone binary**, for a machine with neither Node nor Bun. Download it for your platform from [Releases](https://github.com/Advik-B/ConduitMCP/releases) (`conduit-mcp-server-windows-x64.exe`, `conduit-mcp-server-linux-x64`, `conduit-mcp-server-darwin-arm64`, or `conduit-mcp-server-darwin-x64`), `chmod +x` it on Linux and macOS, clear quarantine on macOS (`xattr -d com.apple.quarantine <binary>`), and use its absolute path as the `command` with `args: ["--project", "..."]`.
