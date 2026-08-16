@@ -9,8 +9,11 @@ what produces the dead ends listed in SKILL.md.
 2. `gd_addon_status` if `gd_status` reported the addon as `missing` or `stale`.
 3. `gd_addon_install` if needed. Refused while an editor is connected, so `gd_editor_quit`
    first if one is up.
-4. `gd_editor_launch`. Takes up to a minute on a cold project, because Godot imports before
-   extensions settle.
+4. `gd_editor_launch`, *only* if no editor is running at all. It refuses with
+   `editor_running_unbridged` when it finds a Godot the broker did not start, which usually means
+   the human has the project open without the opt-in: say so rather than forcing past it. When it
+   does launch, it takes up to a minute on a cold project, because Godot imports before extensions
+   settle.
 5. `gd_scene_open` for the scene the task is about, then `gd_scene_tree_get` to see it.
 
 ## 2. Build a scene

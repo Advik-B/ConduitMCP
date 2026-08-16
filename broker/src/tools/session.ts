@@ -19,6 +19,7 @@ import { z } from "zod";
 
 import { AddonError, detectAddon, installAddon } from "../addon.ts";
 import type { BridgeManager, EditorProcess } from "../bridge-manager.ts";
+import { editorPresence, foreignEditorAdvice } from "../editor-presence.ts";
 import type { GodotResolver } from "../godot-locate.ts";
 import { searchedLocations } from "../godot-locate.ts";
 import { BridgeError } from "../ipc-client.ts";
@@ -317,6 +318,10 @@ export function registerSessionTools(
         "Launch the Godot editor on the broker's configured project and wait for its bridge to connect. The engine binary is found automatically (PATH, then the usual install locations); --godot or CONDUIT_GODOT overrides that. headless=true runs the editor without a window, which is how scripted sessions drive it.",
       inputSchema: {
         headless: z.boolean().describe("Run the editor with --headless (no window).").optional(),
+        force: z
+          .boolean()
+          .describe("Launch even though another Godot process is running. Only when you know it is unrelated.")
+          .optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
@@ -336,6 +341,21 @@ export function registerSessionTools(
             retryable: true,
           });
         }
+        // Launching is optional, and a second editor on one project is worse
+        // than not launching at all: Godot expects to own project.godot for its
+        // session. An editor the human opened is invisible to both guards above,
+        // so ask the machine rather than assuming absence.
+        if (args.force !== true) {
+          const advice = foreignEditorAdvice(await editorPresence(manager));
+          if (advice) {
+            throw new BridgeError({
+              code: "editor_running_unbridged",
+              message: `${advice} Pass force=true to launch anyway if that process belongs to another project.`,
+              retryable: false,
+            });
+          }
+        }
+
         const godot = options.godot.resolve();
         if (!godot) {
           throw new BridgeError({

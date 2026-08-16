@@ -85,7 +85,7 @@ Errors carry a stable `code`, a message that usually names the fix, and a `retry
 
 | Code | What to do |
 | --- | --- |
-| `editor_unavailable`, `disconnected` | No editor bridge. `gd_editor_launch`, or ask the human to open the project. |
+| `editor_unavailable`, `disconnected` | No editor bridge. Launching is not automatically the fix: see `editor_running_unbridged` below, then `gd_editor_launch`, or ask the human to open the project. |
 | `game_not_running` | `gd_play`. |
 | `game_breaked` | A game is halted at a breakpoint. This is one global flag, so *every* game tool fails until `gd_debug` with `op=continue`. |
 | `no_edited_scene` | Nothing open in the editor. `gd_scene_open`. |
@@ -95,7 +95,8 @@ Errors carry a stable `code`, a message that usually names the fix, and a `retry
 | `not_available_headless` | No renderer under `--headless`. Assert on state instead of pixels. |
 | `editor_running` | Addon install refused while an editor is connected. `gd_editor_quit`, install, relaunch. |
 | `already_connected` | An editor is already up. Use it; quit first only to deliberately relaunch. |
-| `godot_binary_not_found` | Ask the human to set `CONDUIT_GODOT`. |
+| `editor_running_unbridged` | A Godot is running that the broker did not start. If it is this project, it was opened without the opt-in: ask the human to relaunch it with `--conduit` or `CONDUIT_ENABLE` and the broker attaches. Only pass `force=true` if that process is a different project. |
+| `godot_binary_not_found` | No engine found. An editor that is already running needs none, so rule that out first. Then ask the human to set `CONDUIT_GODOT`. |
 | `protocol_mismatch`, `unknown_tool` | Addon and broker versions disagree. Close the editor, `gd_addon_install`, reopen. |
 | `busy`, `timeout`, `network_error` | Transient. Retry once. |
 
@@ -103,6 +104,10 @@ Errors carry a stable `code`, a message that usually names the fix, and a `retry
 
 These produce dead ends rather than error messages you can act on:
 
+- `gd_editor_launch` is optional, never a required first step. The human may already have the
+  project open. An editor started without the opt-in does not show as connected, so absence of a
+  bridge is not absence of an editor; launching then puts a second editor on a project Godot
+  expects to own for its session. `gd_status` first, always.
 - `gd_addon_install` is refused while an editor is connected, because Godot binds a GDExtension
   only at startup. Quit, install, relaunch.
 - `gd_autoload` and `gd_input_map` write `project.godot`. They apply to *subsequently launched*
