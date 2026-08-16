@@ -22,6 +22,12 @@ export const PROTOCOL_VERSION = 1;
 
 const ENDPOINT_BACKOFF_BASE_MS = 250;
 const ENDPOINT_BACKOFF_MAX_MS = 30_000;
+// The editor backs off far less than a game endpoint. A game socket that will
+// not answer is one of many and is usually a corpse; the editor endpoint is the
+// only one the broker has, and "accepted but no hello yet" is also what a cold
+// editor looks like while it imports before its extension settles. Waiting half
+// a minute to try that again would turn a slow start into a dead session.
+const EDITOR_BACKOFF_MAX_MS = 5_000;
 
 export interface BridgeManagerOptions {
   editorEndpoint: Endpoint;
@@ -240,11 +246,11 @@ export class BridgeManager {
       // shared counter would let a long absence push the very first busy attempt
       // straight to the cap.
       this.editorAttempts += 1;
-      const delayMs = Math.min(2 ** this.editorAttempts * ENDPOINT_BACKOFF_BASE_MS, ENDPOINT_BACKOFF_MAX_MS);
+      const delayMs = Math.min(2 ** this.editorAttempts * ENDPOINT_BACKOFF_BASE_MS, EDITOR_BACKOFF_MAX_MS);
       this.editorBackoffUntil = Date.now() + delayMs;
       if (!this.editorQuiet) {
         this.editorQuiet = true;
-        log(`${error.message}; retrying quietly, at most every ${Math.round(ENDPOINT_BACKOFF_MAX_MS / 1000)}s`);
+        log(`${error.message}; retrying quietly, at most every ${Math.round(EDITOR_BACKOFF_MAX_MS / 1000)}s`);
       }
       return;
     }
