@@ -37,8 +37,17 @@ jobs:
         working-directory: broker
       - run: bun run typecheck
 
+  # The acceptance runners drive a real Godot editor over the real transport, so
+  # this is the only job that exercises the per-OS serve models end to end: Unix
+  # sockets on Linux and macOS, and the named pipe and its separate two-thread
+  # serve path on Windows. CLAUDE.md claims these runners pass on all three, so
+  # all three run here rather than Linux standing in for the others.
   integration:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     env:
       GODOT_VERSION: 4.7.1-stable
     steps:
@@ -53,6 +62,8 @@ jobs:
           path: tools/godot
           key: godot-${{ runner.os }}-${{ env.GODOT_VERSION }}
       - run: bun install --frozen-lockfile
+      # Resolves the right release asset per platform and installs Xvfb only on
+      # Linux; Windows and macOS render natively (docs/api-gaps.md).
       - run: bun scripts/setup.ts
       - run: cargo build -p conduit
       - run: bun run ci:phases
