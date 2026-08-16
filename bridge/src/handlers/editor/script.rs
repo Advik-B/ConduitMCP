@@ -189,18 +189,40 @@ impl PendingOp for ScriptCheckPending {
 
         let mut bytes = std::fs::read(&self.output_path).unwrap_or_default();
         let _ = std::fs::remove_file(&self.output_path);
-
-        if status.success() {
-            return Some(Ok(json!({ "path": self.path, "valid": true, "diagnostics": [] })));
-        }
-
         if bytes.len() > VALIDATE_OUTPUT_MAX_BYTES {
             bytes.drain(0..bytes.len() - VALIDATE_OUTPUT_MAX_BYTES);
         }
         let text = String::from_utf8_lossy(&bytes);
+        let exit_code = status.code();
+
+        // Read the output before deciding, not only after a non-zero exit. The
+        // exit status is the weaker of the two signals and it is not portable:
+        // the same broken script that makes --check-only exit non-zero on Linux
+        // exits 0 on macOS, which reported a script with a syntax error as valid
+        // (docs/api-gaps.md). Believing the subprocess only when it both exited
+        // clean and said nothing about a parse failure costs nothing on the
+        // platforms that were already right.
+        if status.success() && !output_reports_script_error(&text) {
+            return Some(Ok(json!({ "path": self.path, "valid": true, "diagnostics": [], "exit_code": exit_code })));
+        }
+
         let diagnostics = extract_diagnostics(&text, &self.path);
-        Some(Ok(json!({ "path": self.path, "valid": false, "diagnostics": diagnostics })))
+        Some(Ok(json!({ "path": self.path, "valid": false, "diagnostics": diagnostics, "exit_code": exit_code })))
     }
+}
+
+/// Whether the check subprocess said the script failed to parse.
+///
+/// Deliberately narrower than [`extract_diagnostics`], which treats any line
+/// containing "error" as reportable. That breadth is right for listing what went
+/// wrong, but as a validity test it would turn an unrelated engine warning into
+/// a failed validation. These two markers are what GDScript actually prints for
+/// a parse failure, in the message line and in the load failure that follows it.
+fn output_reports_script_error(text: &str) -> bool {
+    text.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("script error") || lower.contains("parse error")
+    })
 }
 
 /// Best-effort diagnostic extraction from the engine log's error output
@@ -322,6 +344,26 @@ mod tests {
         let diagnostics = extract_diagnostics(log, "res://broken.gd");
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0]["line"].is_null());
+    }
+
+    #[test]
+    fn a_parse_failure_is_recognised_whatever_the_exit_status() {
+        // The macOS case: --check-only exits 0 on a parse error there, so the
+        // output is the only thing left that says the script is broken.
+        let log = "SCRIPT ERROR: Parse Error: Expected parameter name.\n   at: GDScript::reload (res://broken.gd:2)\n";
+        assert!(output_reports_script_error(log));
+        let load_failure = "ERROR: Failed to load script \"res://broken.gd\" with error \"Parse error\".\n";
+        assert!(output_reports_script_error(load_failure));
+    }
+
+    #[test]
+    fn a_clean_check_is_not_read_as_a_parse_failure() {
+        // The other half of the rule: an unrelated line mentioning an error must
+        // not fail a script that parsed, or every valid script on a noisy engine
+        // build would come back invalid.
+        assert!(!output_reports_script_error("Godot Engine v4.7.1.stable.official\n"));
+        assert!(!output_reports_script_error(""));
+        assert!(!output_reports_script_error("ERROR: Cannot open file 'res://unrelated.png'.\n"));
     }
 
     #[test]

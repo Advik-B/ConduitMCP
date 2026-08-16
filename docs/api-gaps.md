@@ -226,6 +226,23 @@ socket. The tradeoff is a full Godot startup per validation call (roughly
 0.3s for a trivial script, more for a larger project) rather than an
 in-process reload.
 
+That subprocess's exit status turned out not to be portable. `--check-only`
+exits non-zero on a parse error on Linux and Windows but exits **0** on macOS,
+and `gd_script_validate` decided the verdict from the status alone, so a script
+with a syntax error came back `valid: true` with no diagnostics. The phase 3
+acceptance check `script_validate_reports_broken_script` caught it the first
+time the acceptance suite ran on macOS, which is the whole reason that job is a
+three-platform matrix; on Linux alone it had looked correct for every release so
+far.
+
+The verdict now needs both signals: the subprocess must have exited clean *and*
+its output must not name a parse failure. The output test
+(`output_reports_script_error`) is deliberately narrower than
+`extract_diagnostics`, which counts any line containing "error" — right for
+listing what went wrong, wrong as a validity test, since one unrelated engine
+warning would then fail every valid script. The response also carries
+`exit_code` now, so a future divergence is visible without a CI round-trip.
+
 `EditorInterface::get_open_scenes()`/`get_scene_file_path()` do not reliably
 reflect a just-opened scene immediately after `open_scene_from_path` under
 headless `--editor` runs (both were tried as the readiness signal for
