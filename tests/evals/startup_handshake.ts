@@ -22,6 +22,7 @@
 // Run with `bun tests/evals/startup_handshake.ts`.
 
 import net from "node:net";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
@@ -29,6 +30,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+import { encodeFrame } from "../../broker/src/framing.ts";
 import { editorEndpointFor, endpointKey, repoRoot, runtimeDir } from "./harness.ts";
 
 // Generous next to the ~360 ms a warm handshake takes, and still far below the
@@ -86,6 +88,22 @@ function silentListener(endpoint: string): Promise<net.Server> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(endpoint, () => resolve(server));
+  });
+}
+
+function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const tick = (): void => {
+      if (predicate()) {
+        resolve(true);
+      } else if (Date.now() >= deadline) {
+        resolve(false);
+      } else {
+        setTimeout(tick, 20);
+      }
+    };
+    tick();
   });
 }
 
@@ -147,6 +165,69 @@ async function main(): Promise<void> {
       await client.close();
     } finally {
       await closeListener(server);
+    }
+  }
+
+  // A broker whose MCP client has gone must let go of the bridge. Nothing else
+  // makes it: the SDK's stdio transport does not watch stdin for its end, and
+  // the connected bridge socket is a live handle that keeps the process up. An
+  // orphan like that holds the bridge's only accept slot, so the next broker to
+  // start cannot attach at all.
+  {
+    const endpoint = editorEndpointFor(RUNTIME_DIR, PROJECT_DIR);
+    if (typeof endpoint !== "string") {
+      throw new Error("this runner does not support the TCP transport; unset CONDUIT_TCP");
+    }
+    let socketClosed = false;
+    const held: net.Socket[] = [];
+    const bridge = net.createServer((socket) => {
+      held.push(socket);
+      socket.write(
+        encodeFrame({
+          hello: {
+            role: "editor",
+            protocol_version: 1,
+            bridge_version: "0",
+            engine_version: "4.4.0",
+            project_path: PROJECT_DIR,
+            pid: 1,
+          },
+        }),
+      );
+      socket.on("close", () => {
+        socketClosed = true;
+      });
+      socket.on("error", () => {});
+    });
+    bridge.on("error", () => {});
+    await new Promise<void>((resolve) => bridge.listen(endpoint, () => resolve()));
+
+    const proc = spawn("bun", [join(repoRoot, "broker", "src", "index.ts"), "--project", PROJECT_DIR], {
+      env: { ...process.env, CONDUIT_RUNTIME_DIR: RUNTIME_DIR },
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    let exitCode: number | null = null;
+    proc.on("exit", (code) => {
+      exitCode = code;
+    });
+
+    try {
+      const attached = await waitFor(() => held.length > 0, 10_000);
+      record("a broker attaches to the stub bridge", attached, attached ? "connected" : "never connected");
+
+      proc.stdin.end();
+      const left = await waitFor(() => exitCode !== null && socketClosed, 10_000);
+      record(
+        "the broker exits and releases the bridge when its client closes stdin",
+        left,
+        `exit=${exitCode ?? "still running"}, bridge socket closed=${socketClosed}`,
+      );
+    } finally {
+      proc.kill();
+      for (const socket of held) {
+        socket.destroy();
+      }
+      await new Promise<void>((resolve) => bridge.close(() => resolve()));
     }
   }
 

@@ -483,6 +483,56 @@ unread for the call's ten-second deadline and the client reported a server
 timeout. `bun run handshake` (`tests/evals/startup_handshake.ts`) pins the fix,
 including against a listener that accepts and stays silent.
 
+### A closed socket is not the only way a peer dies
+
+Both ends used to treat the socket closing as the sole disconnect signal. That
+covers a crash: a process dying takes its descriptors with it whatever killed it,
+so EOF arrives whether the exit was clean, a SIGKILL, a segfault, or an OOM kill.
+It does not cover a peer that is still holding the descriptor while being unable
+to act on it, and there are four such cases.
+
+- **An orphaned broker.** The MCP SDK's `StdioServerTransport` listens for `data`
+  and `error` on stdin but never for its end, so the client closing stdin fires
+  nothing, and the connected bridge socket is a live handle that keeps the process
+  running. The broker now watches stdin itself and handles `SIGTERM`/`SIGINT`,
+  releasing its bridge connections before exiting.
+- **A suspended or wedged peer.** `SIGSTOP`, a debugger, a sleeping laptop. No FIN
+  is ever sent.
+- **An inherited descriptor.** `gd_editor_launch` spawns an engine from the
+  broker; any descriptor reaching that child outlives the broker.
+- **A peer that stops reading.** This one hung the bridge outright.
+  `write_framed_bytes` retried `WouldBlock` in a sleep loop whose only exit was
+  the stop flag, so a full socket buffer pinned the IO thread inside a single
+  frame, the serve function never returned, and `mark_listening` was never
+  reached. It now has a deadline.
+
+The heartbeat of whitepaper section 7.5 covers all four uniformly, in both
+directions, because it does not care why the peer went quiet. Two properties of
+its design are worth stating because they are easy to get wrong:
+
+Liveness frames are handled on the IO path at both ends, never through the
+dispatcher. A pong therefore attests to the transport and says nothing about the
+engine's main thread, which is deliberate: an export runs on a ten-minute budget
+and must not read as death. Per-request timeouts remain the check on main-thread
+responsiveness, and `game_breaked` still covers the debugger case.
+
+The deadline arms only once a peer has answered a ping. `PROTOCOL_VERSION` stays
+1, so a broker and bridge from adjacent releases still interoperate; without the
+arming rule, a new bridge would disconnect an older broker every twenty seconds
+for not speaking a frame that did not exist when it was built. An unanswering
+peer degrades to close-only detection, which is exactly what it had before.
+
+Covered by `liveness` in `bridge/src/transport/ipc.rs`, `BridgeClient liveness`
+in `broker/tests/ipc-client.test.ts`, and the orphan case in `bun run handshake`.
+The Rust and TypeScript timings are scaled down under test so the assertions cost
+milliseconds rather than a half-minute each.
+
+One limitation remains on Windows. `serve_split` writes with blocking calls,
+which cannot carry the deadline `write_framed_bytes` has, so a peer that stops
+reading while the bridge has frames to write can still park the writer thread for
+as long as the OS pipe buffer allows. The idle path, which is where the heartbeat
+lives, is unaffected.
+
 ### gd_play from a headless editor remains unproven
 
 Phase 7's game-side checks (`gd_find_nodes`, `gd_classdb` on the game bridge)

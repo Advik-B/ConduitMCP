@@ -161,6 +161,9 @@ export class BridgeManager {
         this.editor = null;
         this.options.events.record("editor_disconnected", {});
       };
+      // From here the link is ours, so start asking whether it is still alive.
+      // The reconnect loop below picks it up again when liveness drops it.
+      client.startLiveness();
       this.editor = client;
       this.editorHello = hello;
       // Resync break state: events emitted while the broker was disconnected
@@ -273,6 +276,27 @@ export class BridgeManager {
       clearInterval(this.discoveryTimer);
       this.discoveryTimer = null;
     }
+  }
+
+  /**
+   * Release every bridge connection, for a broker that is going away.
+   *
+   * Letting process exit do this is not good enough. A bridge serves one client
+   * at a time, so until these sockets close the engine keeps the accept slot
+   * assigned to a broker that is leaving, and the next one to start cannot
+   * attach. Closing here makes that handover immediate rather than dependent on
+   * the peer noticing.
+   */
+  shutdown(): void {
+    this.stopBackground();
+    this.editor?.close();
+    this.editor = null;
+    for (const instance of this.games.values()) {
+      instance.client.close();
+    }
+    this.games.clear();
+    this.connectedSockets.clear();
+    this.currentPid = null;
   }
 
   isEditorConnected(): boolean {
@@ -450,6 +474,9 @@ export class BridgeManager {
       const instance: GameInstance = { client, hello, key };
       client.onEvent = (event) => this.options.events.record(event.event, { ...(event.data as object), pid: hello.pid });
       client.onClose = () => this.handleGameClose(hello.pid, key);
+      // A game that stops answering is reported as exited through the same path
+      // as one whose socket closed; discovery re-adopts it if it comes back.
+      client.startLiveness();
 
       this.games.set(hello.pid, instance);
       this.currentPid = hello.pid;

@@ -791,6 +791,27 @@ async function main(): Promise<void> {
   manager.startEditorReconnect();
   manager.startGameDiscovery();
 
+  // Leave when the MCP client does. The SDK's stdio transport listens for data
+  // and errors on stdin but not for its end, so nothing else notices the client
+  // closing it, and the connected bridge socket is a live handle that keeps this
+  // process running long after it has anyone to serve. An orphan like that still
+  // holds the bridge's only accept slot, which is what makes the next broker
+  // unable to attach at all.
+  let leaving = false;
+  const leave = (why: string): void => {
+    if (leaving) {
+      return;
+    }
+    leaving = true;
+    log(`${why}; releasing the bridge connections and exiting`);
+    manager.shutdown();
+    process.exit(0);
+  };
+  process.stdin.on("end", () => leave("the MCP client closed stdin"));
+  process.stdin.on("close", () => leave("stdin closed"));
+  process.on("SIGTERM", () => leave("SIGTERM"));
+  process.on("SIGINT", () => leave("SIGINT"));
+
   // After the handshake, so a slow or failing download never delays the client.
   // Progress reaches the agent through the event ring and gd_status.
   if (config.autoInstall) {
