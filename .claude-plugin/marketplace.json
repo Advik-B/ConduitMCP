@@ -1,0 +1,20 @@
+{
+  "name": "conduit",
+  "owner": {
+    "name": "Advik",
+    "url": "https://github.com/Advik-B"
+  },
+  "plugins": [
+    {
+      "name": "conduit",
+      "description": "Native in-process MCP bridge for full agentic control of the Godot engine: the server, the agent skill, and a Godot installer.",
+      "source": {
+        "source": "npm",
+        "package": "conduit-mcp-server"
+      },
+      "homepage": "https://github.com/Advik-B/ConduitMCP",
+      "license": "MIT",
+      "keywords": ["mcp", "godot", "gamedev", "ai", "model-context-protocol"]
+    }
+  ]
+}

@@ -813,3 +813,46 @@ explicitly for configs that can set a variable but not unset one.
 passes on a re-run: the editor's filesystem rescan is asynchronous and the tool's
 wait does not always cover it. Unrelated to the tool's own correctness, but worth
 knowing before treating a red phase 3 as a regression.
+
+## Engine installation and the Godot release archives
+
+The engine installer (`broker/src/godot-install.ts`) reads the Godot releases
+directly, and four things about those archives are not guessable. All were
+checked against the `4.7.1-stable` central directories rather than assumed.
+
+**The .NET asset names differ from the standard ones in three separate ways.**
+Not "the standard name with `mono` inserted": Linux swaps the dot before the
+architecture for an underscore, Windows drops the `.exe` the standard archive
+carries, and only macOS keeps its shape.
+
+```
+Godot_v4.7.1-stable_linux.x86_64.zip      Godot_v4.7.1-stable_mono_linux_x86_64.zip
+Godot_v4.7.1-stable_win64.exe.zip         Godot_v4.7.1-stable_mono_win64.zip
+Godot_v4.7.1-stable_macos.universal.zip   Godot_v4.7.1-stable_mono_macos.universal.zip
+```
+
+**The .NET archives unpack one level deeper.** The standard Linux archive is a
+single bare executable; the .NET one is a directory named for the build holding
+the executable plus `GodotSharp/`. The nesting also renames: the directory is
+`..._mono_linux_x86_64` while the binary inside it is `..._mono_linux.x86_64`.
+On macOS the bundle is `Godot_mono.app`, not `Godot.app`. `findEngineBinary`
+therefore searches one level down as well as directly, and scans for `*.app`
+rather than hardcoding either bundle name.
+
+**Every archive is written on a Unix host, so the modes are real and load-
+bearing.** The Linux editor arrives `0755` and stops being launchable if
+extraction drops that. `zip.ts` originally discarded the external attributes
+entirely, which was invisible while it only ever read the addon zip (data and a
+library Godot loads, never something exec'd). It now surfaces the mode.
+
+**No archive contains a symlink**, macOS included, which was the open question
+that decided whether the in-process extractor was viable there at all. Symlink
+handling exists in the installer anyway, because an archive that gained one
+would otherwise unpack a text file where a link belongs and fail much later.
+Staying in-process is also what keeps macOS quarantine off the result: files the
+broker writes itself are not quarantined, while an archive handed to `ditto` or
+`unzip` would be.
+
+Checksums are SHA-512 under `SHA512-SUMS.txt`, not the addon's SHA-256 under
+`SHA256SUMS.txt`, and entries there are sometimes path-prefixed, so the digest
+lookup compares basenames. An exact compare reports a good release as unlisted.

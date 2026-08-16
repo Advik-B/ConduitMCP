@@ -117,15 +117,23 @@ on \`PATH\` and in the usual install locations by itself.
 Editor-side tools need no opt-in: the broker finds any running editor for the
 configured project automatically.
 
-## Teach the agent the tool surface
+## Install as a Claude Code plugin instead
 
-This package ships an agent skill, \`skills/godot-conduit/\`, that front-loads the
-things an agent otherwise spends calls rediscovering: which of the two bridges
-each tool routes to, edit-time versus runtime node paths, the tagged Variant
-encoding, what each error code means, and the ordering rules that produce dead
-ends. It is optional, and worth installing.
+This package is also a Claude Code plugin, which configures the server and
+installs the agent skill in one step, with no config file to edit:
 
-Copy the directory into your project's \`.claude/skills/\`:
+\`\`\`
+/plugin marketplace add Advik-B/ConduitMCP
+/plugin install conduit@conduit
+\`\`\`
+
+The skill is what makes the tool surface usable without trial and error: which
+of the two bridges each tool routes to, edit-time versus runtime node paths, the
+tagged Variant encoding, what each error code means, and the ordering rules that
+produce dead ends.
+
+For any other MCP client, use the \`mcpServers\` entry above and copy the skill
+directory yourself:
 
 \`\`\`
 cp -r node_modules/${PACKAGE_NAME}/skills/godot-conduit .claude/skills/
@@ -134,6 +142,17 @@ cp -r node_modules/${PACKAGE_NAME}/skills/godot-conduit .claude/skills/
 With \`npx\` there is no \`node_modules\` to copy from; take it from
 [the repository](${REPO_URL}/tree/master/skills/godot-conduit) instead. Keep it on
 the same version as the server: it documents that version's tool surface.
+
+## No Godot on the machine
+
+\`conduit-mcp-server --install-godot\` downloads a Godot editor into
+\`~/.conduit/engines\` and exits; the broker then finds it by itself. Add
+\`--godot-mono\` for the .NET build if the project uses C#. The agent can do the
+same mid-session with \`gd_engine_install\`.
+
+Check \`gd_engine_status\` before either: an editor the human already has open
+needs no engine, and Conduit refuses to open a second editor on a project that
+already has one.
 
 ## Requirements
 
@@ -157,6 +176,9 @@ Run \`npx ${PACKAGE_NAME} --help\` for the full list; every option has a
 | \`--auto-install\` | \`CONDUIT_AUTO_INSTALL\` | Install the matching addon into the project if it has none (off by default). |
 | \`--addon-source <path>\` | \`CONDUIT_ADDON_SOURCE\` | Install the addon from a local zip, directory, or URL instead of the release. |
 | \`--godot <path>\` | \`CONDUIT_GODOT\` | Override the engine binary for \`gd_editor_launch\`; found automatically otherwise. |
+| \`--install-godot\` | | Download and install a Godot engine, then exit. \`--godot-version <tag>\` picks the release, \`--godot-mono\` the .NET/C# build. Needs no \`--project\`. |
+| \`--auto-install-godot\` | \`CONDUIT_AUTO_INSTALL_GODOT\` | Allow an engine to be installed unasked when none is found (off by default). |
+| \`--engine-dir <path>\` | \`CONDUIT_ENGINE_DIR\` | Where installed engines live, default \`~/.conduit/engines\`; \`--engine-source\` installs from a local zip or directory. |
 | \`--enable-pixel-tools\` | \`CONDUIT_ENABLE_PIXEL_TOOLS\` | Enable coordinate-level editor mouse tools (off by default). |
 | \`--enable-editor-eval\` | \`CONDUIT_ENABLE_EDITOR_EVAL\` | Enable \`gd_editor_eval\` (off by default). |
 | \`--disable-eval\` | \`CONDUIT_DISABLE_EVAL\` | Drop the whole eval class of tools. |
@@ -210,10 +232,41 @@ async function main(): Promise<void> {
     license: "MIT",
     type: "module",
     bin: { [PACKAGE_NAME]: "index.js" },
-    files: ["index.js", "README.md", "LICENSE", "skills"],
+    files: ["index.js", "README.md", "LICENSE", "skills", ".mcp.json", ".claude-plugin"],
     engines: { node: ">=20" },
   };
   writeFileSync(join(outDir, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+
+  // The same tarball is also a Claude Code plugin: a manifest plus an .mcp.json
+  // makes installing the plugin configure the server and install the skill in
+  // one step, instead of editing a config file and copying a directory by hand.
+  // Both are generated rather than committed so the version can only ever come
+  // from the workspace Cargo.toml.
+  mkdirSync(join(outDir, ".claude-plugin"), { recursive: true });
+  const plugin = {
+    name: "conduit",
+    description: manifest.description,
+    version,
+    homepage: REPO_URL,
+    repository: REPO_URL,
+    license: "MIT",
+    keywords: manifest.keywords,
+  };
+  writeFileSync(join(outDir, ".claude-plugin", "plugin.json"), `${JSON.stringify(plugin, null, 2)}\n`);
+
+  // CLAUDE_PLUGIN_ROOT points at the installed package, so the server runs the
+  // copy that shipped with this plugin rather than resolving one from the
+  // registry. CLAUDE_PROJECT_DIR assumes the workspace root is the Godot
+  // project; when it is not, the user overrides --project.
+  const mcp = {
+    mcpServers: {
+      conduit: {
+        command: "node",
+        args: ["${CLAUDE_PLUGIN_ROOT}/index.js", "--project", "${CLAUDE_PROJECT_DIR}"],
+      },
+    },
+  };
+  writeFileSync(join(outDir, ".mcp.json"), `${JSON.stringify(mcp, null, 2)}\n`);
 
   copyFileSync(join(repoRoot, "LICENSE"), join(outDir, "LICENSE"));
   writeFileSync(join(outDir, "README.md"), readme(version));

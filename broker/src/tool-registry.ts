@@ -61,6 +61,8 @@ export const TOOL_GROUP_BY_NAME: Record<string, ToolGroup> = {
   gd_project_scaffold: "core",
   gd_addon_install: "core",
   gd_addon_status: "core",
+  gd_engine_status: "core",
+  gd_engine_install: "core",
   gd_editor_launch: "core",
   gd_editor_quit: "core",
 

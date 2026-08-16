@@ -34,7 +34,7 @@ Nothing listens on the network, and the bridge refuses to activate in release bu
 
 ## What the agent can do
 
-89 tools, 84 exposed by default and the rest behind opt-in flags. The broad strokes:
+91 tools, 86 exposed by default and the rest behind opt-in flags. The broad strokes:
 
 - **Edit scenes the way the editor does**: open, create, and save scenes; add, remove, reparent, rename, and duplicate nodes; set properties with full Godot typing (vectors, colors, resources); attach and validate scripts; wire signals and groups; manage autoloads and the input map. Every mutation is undo-wrapped, so one `gd_undo` reverses it and the developer's undo history stays coherent.
 
@@ -111,9 +111,22 @@ Editor-side tools need no opt-in: the broker finds any running editor for the co
 
 Keep the broker and the addon on the same version. The npm package and the addon zip are released together from the same tag, so an `X.Y.Z` addon expects an `X.Y.Z` broker; pinning the version in `args` is the simplest way to keep them in step.
 
-## Teach the agent the tool surface
+## One-step install for Claude Code
 
-Optional, and worth doing. `skills/godot-conduit/` is an agent skill that front-loads what an agent otherwise spends calls rediscovering: which of the two bridges each tool routes to, edit-time versus runtime node paths, the tagged Variant encoding, what each error code means, and the ordering rules that produce dead ends (install the addon with no editor running, validate a script before attaching it, save before playing). It ships inside the npm package as well as living here, so `cp -r node_modules/conduit-mcp-server/skills/godot-conduit .claude/skills/` installs it for a local install, and copying `skills/godot-conduit/` out of this repository does the same for `npx` users. Keep it on the same version as the broker; it documents that version's tools.
+The npm package is also a Claude Code plugin, which configures the server and installs the agent skill together, with no config file to edit:
+
+```
+/plugin marketplace add Advik-B/ConduitMCP
+/plugin install conduit@conduit
+```
+
+The skill is the half that makes the tool surface usable without trial and error: which of the two bridges each tool routes to, edit-time versus runtime node paths, the tagged Variant encoding, what each error code means, and the ordering rules that produce dead ends (install the addon with no editor running, validate a script before attaching it, save before playing). For any other MCP client, use the `mcpServers` entry above and copy the skill yourself with `cp -r node_modules/conduit-mcp-server/skills/godot-conduit .claude/skills/`, or take `skills/godot-conduit/` out of this repository if you run it through `npx`. Keep it on the same version as the broker; it documents that version's tools.
+
+## No Godot installed?
+
+`conduit-mcp-server --install-godot` downloads a Godot editor into `~/.conduit/engines` and exits, and the broker finds it from then on. Add `--godot-mono` for the .NET build if the project uses C#; both builds of a version can live side by side. An agent can do the same mid-session with `gd_engine_install`.
+
+Check `gd_engine_status` first, though. An editor you already have open needs no engine, and Conduit will not open a second editor on a project that already has one: a Godot started without the `--conduit` opt-in does not appear as connected, and launching over it puts two editors on a `project.godot` that Godot expects to own for its session. Relaunch the one you have with the opt-in and the broker attaches to it.
 
 Two alternatives to npm, if you want them:
 
@@ -130,6 +143,9 @@ Run `conduit-mcp-server --help` for the full option list, or read [docs/environm
 | `--auto-install` | `CONDUIT_AUTO_INSTALL` | Install the matching addon into the project if it has none (off by default). |
 | `--addon-source <path>` | `CONDUIT_ADDON_SOURCE` | Install the addon from a local zip, directory, or URL instead of the GitHub release. |
 | `--godot <path>` | `CONDUIT_GODOT` | Override the engine binary for `gd_editor_launch`; found automatically otherwise. |
+| `--install-godot` | | Download and install a Godot engine, then exit. `--godot-version <tag>` picks the release, `--godot-mono` the .NET/C# build. Needs no `--project`. |
+| `--auto-install-godot` | `CONDUIT_AUTO_INSTALL_GODOT` | Allow an engine to be installed unasked when none is found (off by default). Separate from `--auto-install`: an engine is a 60-200 MB machine-wide download. |
+| `--engine-dir <path>` | `CONDUIT_ENGINE_DIR` | Where installed engines live, default `~/.conduit/engines`. `--engine-source` installs from a local zip or directory instead of downloading. |
 | `--enable-pixel-tools` | `CONDUIT_ENABLE_PIXEL_TOOLS` | Enable coordinate-level editor mouse tools (off by default). |
 | `--enable-editor-eval` | `CONDUIT_ENABLE_EDITOR_EVAL` | Enable `gd_editor_eval`, GDScript in the editor process (off by default). |
 | `--disable-eval` | `CONDUIT_DISABLE_EVAL` | Drop the whole eval class: `gd_game_eval`, `gd_editor_eval`, networking tools, project-defined tools. |

@@ -26,7 +26,8 @@ import { type CliOptions, applyTransportEnv, runCli } from "./cli.ts";
 import { type Endpoint, editorEndpoint, editorEndpointFromOverride, endpointKey } from "./endpoint.ts";
 import { envFlag, envInt } from "./env.ts";
 import { EventRing } from "./events.ts";
-import { GodotResolver } from "./godot-locate.ts";
+import { EngineError, installEngine } from "./godot-install.ts";
+import { GodotResolver, engineDir } from "./godot-locate.ts";
 import { registerClassDbTools } from "./tools/classdb.ts";
 import { registerEditorAssetsTools } from "./tools/editor-assets.ts";
 import { registerEditorCollabTools } from "./tools/editor-collab.ts";
@@ -81,6 +82,9 @@ interface Config {
   godot: GodotResolver;
   autoInstall: boolean;
   addonSource: string | null;
+  engineDir: string;
+  engineSource: string | null;
+  autoInstallGodot: boolean;
   timeouts: Timeouts;
   auditLog: string | null;
   auditMaxBytes: number;
@@ -125,6 +129,9 @@ export function resolveConfig(cli: CliOptions, env: NodeJS.ProcessEnv = process.
     godot: new GodotResolver(cli.godot ?? env.CONDUIT_GODOT ?? null),
     autoInstall: cli.autoInstall ?? envFlag(env.CONDUIT_AUTO_INSTALL),
     addonSource: cli.addonSource ?? env.CONDUIT_ADDON_SOURCE ?? null,
+    engineDir: cli.engineDir ?? env.CONDUIT_ENGINE_DIR ?? engineDir(env),
+    engineSource: cli.engineSource ?? env.CONDUIT_ENGINE_SOURCE ?? null,
+    autoInstallGodot: cli.autoInstallGodot ?? envFlag(env.CONDUIT_AUTO_INSTALL_GODOT),
     timeouts: {
       default: cli.timeoutMs ?? envInt("CONDUIT_TIMEOUT_MS", env.CONDUIT_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS,
       await: cli.evalTimeoutMs ?? envInt("CONDUIT_EVAL_TIMEOUT_MS", env.CONDUIT_EVAL_TIMEOUT_MS) ?? AWAIT_TIMEOUT_MS,
@@ -139,6 +146,33 @@ export function resolveConfig(cli: CliOptions, env: NodeJS.ProcessEnv = process.
   };
 }
 
+/**
+ * The --install-godot path: install an engine and exit, without a project and
+ * without a server.
+ *
+ * Everything it prints goes to stderr through log(), because stdout carries the
+ * MCP protocol and a stray line there corrupts the transport for a client that
+ * did start one.
+ */
+async function runEngineInstall(cli: CliOptions, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  const target = cli.engineDir ?? env.CONDUIT_ENGINE_DIR ?? engineDir(env);
+  const mono = cli.godotMono ?? envFlag(env.CONDUIT_GODOT_MONO);
+  try {
+    log(`installing the Godot ${mono ? ".NET " : ""}engine into ${target}`);
+    const result = await installEngine({
+      version: cli.godotVersion ?? env.CONDUIT_GODOT_VERSION ?? null,
+      mono,
+      engineDir: target,
+      source: cli.engineSource ?? env.CONDUIT_ENGINE_SOURCE ?? null,
+    });
+    log(result.installed ? `installed Godot ${result.version} at ${result.binary}` : `already installed: ${result.binary}`);
+    return 0;
+  } catch (error) {
+    log(error instanceof EngineError ? `${error.code}: ${error.message}` : String(error));
+    return 1;
+  }
+}
+
 /** Tool-surface options resolved from configuration. */
 export interface ToolOptions {
   enablePixelTools: boolean;
@@ -149,6 +183,10 @@ export interface ToolOptions {
   runtimeDir: string;
   addonSource: string | null;
   timeouts: Timeouts;
+  // Optional so the three test files that build this literal keep compiling; the
+  // session tools fall back to the same defaults resolveConfig would give them.
+  engineDir?: string;
+  engineSource?: string | null;
   // Extra fields merged into gd_status: engine resolution and addon install
   // state live outside the BridgeManager, which only knows about connections.
   extraStatus?: () => Record<string, unknown>;
@@ -471,6 +509,8 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     runtimeDir: options.runtimeDir,
     addonSource: options.addonSource,
     version: VERSION,
+    engineDir: options.engineDir,
+    engineSource: options.engineSource,
     onInstallOutcome: options.onInstallOutcome,
   });
 
@@ -556,6 +596,14 @@ async function main(): Promise<void> {
   }
   // Before resolveConfig, which reads the variables these flags write.
   applyTransportEnv(cli.options);
+
+  // Installing an engine has nothing to do with a project, and resolveConfig
+  // throws without one, so this runs ahead of it. It also never starts a server:
+  // the process does the install and exits.
+  if (cli.options.installGodot === true) {
+    process.exit(await runEngineInstall(cli.options));
+  }
+
   const config = resolveConfig(cli.options);
 
   const groups = parseToolGroups(config.toolGroups);
@@ -641,6 +689,8 @@ async function main(): Promise<void> {
     projectPath: config.projectPath,
     runtimeDir: config.runtimeDir,
     addonSource: config.addonSource,
+    engineDir: config.engineDir,
+    engineSource: config.engineSource,
     timeouts: config.timeouts,
     onInstallOutcome: ({ error, source }) => {
       addon.lastInstallError = error;

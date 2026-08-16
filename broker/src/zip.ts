@@ -1,11 +1,14 @@
-// Minimal zip reader for the addon installer.
+// Minimal zip reader for the addon and engine installers.
 //
 // The published broker is a single bundle targeting stock Node
 // (scripts/pack-npm.ts), so Bun's archive helpers are unavailable and shelling
-// out to unzip or Expand-Archive from an MCP server is fragile. The only
-// archives read here are ones this project produces (scripts/package-addon.ts),
-// which means store and deflate, no zip64 and no encryption. Keeping it in
+// out to unzip or Expand-Archive from an MCP server is fragile. Keeping it in
 // tree also preserves the package's deliberate zero-dependency manifest.
+//
+// Two archive shapes are read: the ones this project produces
+// (scripts/package-addon.ts) and the Godot editor archives from the engine's own
+// releases. Both are store or deflate with no zip64 and no encryption. The Godot
+// archives are what makes the mode on ZipEntry necessary; see there.
 
 import { inflateRawSync } from "node:zlib";
 
@@ -19,6 +22,24 @@ export interface ZipEntry {
   /** Entry name with separators normalised to forward slashes. */
   name: string;
   data: Buffer;
+  /**
+   * Unix mode from the central directory's external attributes, or 0 when the
+   * archive was not written on a Unix host. The addon zips this module was
+   * written for do not need it; the Godot editor archives do, because a Godot
+   * binary that arrives without its executable bit cannot be launched and a
+   * macOS app bundle carries symlinks that must not become regular files.
+   */
+  mode: number;
+}
+
+/** Whether a mode from ZipEntry marks the entry as a symbolic link. */
+export function isSymlink(mode: number): boolean {
+  return (mode & 0o170000) === 0o120000;
+}
+
+/** Whether a mode from ZipEntry has any execute bit set. */
+export function isExecutable(mode: number): boolean {
+  return (mode & 0o111) !== 0;
 }
 
 export class ZipError extends Error {}
@@ -59,8 +80,23 @@ function decompress(method: number, compressed: Buffer, expectedSize: number, na
 /**
  * Read every file entry from a zip buffer. Directory entries (trailing slash,
  * zero length) are skipped: the extractor creates directories from file paths.
+ *
+ * Convenience over iterZip for callers small enough not to care; the engine
+ * installer does care, so it iterates.
  */
 export function readZip(buffer: Buffer): ZipEntry[] {
+  return [...iterZip(buffer)];
+}
+
+/**
+ * Yield entries one at a time, decompressing each only as it is asked for.
+ *
+ * A Godot editor archive runs to ~100 MB, and collecting every inflated entry
+ * before writing any of them would hold the compressed buffer and the whole
+ * decompressed tree at once inside an MCP server process. Yielding lets the
+ * caller write each entry and drop it.
+ */
+export function* iterZip(buffer: Buffer): Generator<ZipEntry> {
   const eocd = findEndOfCentralDirectory(buffer);
   const entryCount = buffer.readUInt16LE(eocd + 10);
   let offset = buffer.readUInt32LE(eocd + 16);
@@ -68,17 +104,21 @@ export function readZip(buffer: Buffer): ZipEntry[] {
     throw new ZipError("zip64 archives are not supported");
   }
 
-  const entries: ZipEntry[] = [];
   for (let index = 0; index < entryCount; index++) {
     if (buffer.readUInt32LE(offset) !== CENTRAL_FILE_HEADER) {
       throw new ZipError(`corrupt central directory at entry ${index}`);
     }
+    // The high byte of "version made by" is the host system; 3 is Unix, and only
+    // then do the top 16 bits of the external attributes hold a st_mode.
+    const madeByHost = buffer.readUInt16LE(offset + 4) >> 8;
     const method = buffer.readUInt16LE(offset + 10);
     const compressedSize = buffer.readUInt32LE(offset + 20);
     const uncompressedSize = buffer.readUInt32LE(offset + 24);
     const nameLength = buffer.readUInt16LE(offset + 28);
     const extraLength = buffer.readUInt16LE(offset + 30);
     const commentLength = buffer.readUInt16LE(offset + 32);
+    const externalAttributes = buffer.readUInt32LE(offset + 38);
+    const mode = madeByHost === 3 ? externalAttributes >>> 16 : 0;
     const localOffset = buffer.readUInt32LE(offset + 42);
     const name = normalizeName(buffer.toString("utf8", offset + 46, offset + 46 + nameLength));
     offset += 46 + nameLength + extraLength + commentLength;
@@ -95,9 +135,8 @@ export function readZip(buffer: Buffer): ZipEntry[] {
     const localExtraLength = buffer.readUInt16LE(localOffset + 28);
     const dataStart = localOffset + 30 + localNameLength + localExtraLength;
     const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
-    entries.push({ name, data: decompress(method, compressed, uncompressedSize, name) });
+    yield { name, data: decompress(method, compressed, uncompressedSize, name), mode };
   }
-  return entries;
 }
 
 /**

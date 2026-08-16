@@ -39,6 +39,12 @@ startup error rather than a silent no-op.
 | `CONDUIT_GODOT` | `--godot <path>` | Override the engine binary used by `gd_editor_launch`. Not needed normally: the broker looks on `PATH` (`godot4`, `godot`, `Godot`) and then in the usual per-platform install locations. Attaching to an editor you opened yourself never uses this. |
 | `CONDUIT_AUTO_INSTALL` | `--auto-install` / `--no-auto-install` | *Flag.* On startup, if the configured directory is a Godot project with no addon installed, download the addon matching this broker's version and write it to `addons/conduit/`, then register the `ConduitRuntime` autoload in `project.godot` (backing the file up to `project.godot.conduit-backup` first). Off by default. See [Addon installation](#addon-installation). |
 | `CONDUIT_ADDON_SOURCE` | `--addon-source <path\|url>` | Where the addon comes from instead of the GitHub release: a local `.zip`, an already-unpacked directory, or a URL. Use it for offline installs, air-gapped machines, or testing a build before it is released. |
+| `CONDUIT_AUTO_INSTALL_GODOT` | `--auto-install-godot` / `--no-auto-install-godot` | *Flag.* Allow an engine to be installed without being asked, when none is found. Off by default, and separate from `CONDUIT_AUTO_INSTALL` because an engine is a 60-200 MB machine-wide download rather than a few files in one project. Calling `gd_engine_install` yourself never needs this. See [Engine installation](#engine-installation). |
+| `CONDUIT_ENGINE_DIR` | `--engine-dir <path>` | Root holding one directory per installed engine build. Defaults to `~/.conduit/engines`. Never a system location: Conduit installs engines for the user running it, and never touches an engine it did not install. |
+| `CONDUIT_ENGINE_SOURCE` | `--engine-source <path\|url>` | Where the engine comes from instead of the Godot release: a local `.zip`, an already-unpacked directory, or a URL. For offline and air-gapped installs. As with `CONDUIT_ADDON_SOURCE`, an explicit source is not checksum-verified: you are vouching for it. |
+| `CONDUIT_GODOT_VERSION` | `--godot-version <tag>` | Engine release to install, for example `4.7.1-stable`. Omitted installs the latest stable release. Applies to `--install-godot` and the unattended path; unrelated to `CONDUIT_GODOT`, which points at a binary you already have. |
+| `CONDUIT_GODOT_MONO` | `--godot-mono` | *Flag.* Install the .NET/C# engine build (Godot Mono) instead of the standard one. Needed for projects with C# scripts; the standard build cannot open them. Both builds of a version can be installed side by side. |
+| | `--install-godot` | Install an engine and exit, without starting a server. Needs no `--project`, since installing an engine has nothing to do with a project. |
 | `CONDUIT_ENABLE_PIXEL_TOOLS` | `--enable-pixel-tools` | *Flag.* Register the tier-3 editor mouse tools, which drive the editor by screen coordinate. Off by default (whitepaper section 9). |
 | `CONDUIT_ENABLE_EDITOR_EVAL` | `--enable-editor-eval` | *Flag.* Register `gd_editor_eval`, which runs arbitrary GDScript in the editor process with the editor's full authority over the project. Off by default. |
 | `CONDUIT_DISABLE_EVAL` | `--disable-eval` | *Flag.* Drop the entire eval class: `gd_game_eval`, `gd_editor_eval`, the networking tools, and project-defined `gd_project_*` tools. Wins over the two opt-ins above. |
@@ -76,7 +82,7 @@ reads none of these; in particular the broker never reads `GODOT_BIN`.
 
 ## Tool groups
 
-The default surface is 84 tools, which is a lot of context for a client that
+The default surface is 86 tools, which is a lot of context for a client that
 only needs some of it. `--tool-groups` slims it, in either of two forms:
 
 ```
@@ -92,7 +98,8 @@ messages list the valid groups. The groups are:
 `assets`, `files`, `export`, `debug`, `collab`, `classdb`, `eval`, `pixel`.
 
 `core` is always registered and cannot be named: it holds `gd_ping`,
-`gd_status`, `gd_game_list`, `gd_get_events`, and the session and addon tools. A
+`gd_status`, `gd_game_list`, `gd_get_events`, and the session, addon, and engine
+tools. A
 deployment that had slimmed away `gd_status` could not be diagnosed, and one
 without `gd_addon_install` could not be finished.
 
@@ -148,6 +155,43 @@ Downloads come from the GitHub release matching the broker's version and are
 verified against the `SHA256SUMS.txt` published beside them; a mismatch fails the
 install rather than unpacking the archive. `CONDUIT_ADDON_SOURCE` skips both the
 download and, for a local path, the checksum.
+
+## Engine installation
+
+The addon is Conduit's half of the pairing; the engine is Godot's. A machine
+with no Godot at all leaves `gd_editor_launch` with nothing to launch, so
+`gd_engine_install` fetches one from the Godot releases into
+`CONDUIT_ENGINE_DIR` (`~/.conduit/engines` by default), one directory per build:
+
+```
+~/.conduit/engines/4.7.1-stable/           the standard build
+~/.conduit/engines/4.7.1-stable-mono/      the .NET/C# build
+```
+
+Both builds of a version can coexist, because a C# project needs the .NET build
+and a GDScript project does not. Pass `mono=true` (or `--godot-mono`) for it.
+
+**Check before installing.** An editor that is already open is proof the machine
+has an engine, and a Godot started without the Conduit opt-in does not show as
+connected. `gd_engine_status` reports both: the resolved binary, and any Godot
+process this broker did not start. `gd_editor_launch` refuses outright in that
+case with `editor_running_unbridged`, because a second editor on one project is
+worse than no editor at all - Godot expects to own `project.godot` for its
+session. The fix is almost always to relaunch the editor the human already has
+open with `--conduit`, whereupon the broker attaches to it.
+
+Installs are marked with a `.conduit-engine` file written last, so an engine
+Conduit did not install is never replaced without `force`, and an install
+interrupted partway reads back as unmanaged rather than as good.
+
+Downloads are verified against the `SHA512-SUMS.txt` published beside them
+(SHA-512 here, unlike the addon's SHA-256). `CONDUIT_ENGINE_SOURCE` skips both
+the download and the checksum, on the same terms as `CONDUIT_ADDON_SOURCE`.
+
+Without `CONDUIT_AUTO_INSTALL_GODOT` nothing is ever downloaded unasked; the
+variable only controls the unattended path, and calling `gd_engine_install`
+yourself works regardless. Outside a session, `conduit-mcp-server
+--install-godot` does the same thing and exits, and needs no `--project`.
 
 ## Example
 

@@ -20,6 +20,8 @@ import { z } from "zod";
 import { AddonError, detectAddon, installAddon } from "../addon.ts";
 import type { BridgeManager, EditorProcess } from "../bridge-manager.ts";
 import { editorPresence, foreignEditorAdvice } from "../editor-presence.ts";
+import { EngineError, installEngine, listInstalledEngines } from "../godot-install.ts";
+import { engineDir } from "../godot-locate.ts";
 import type { GodotResolver } from "../godot-locate.ts";
 import { searchedLocations } from "../godot-locate.ts";
 import { BridgeError } from "../ipc-client.ts";
@@ -35,6 +37,10 @@ export interface SessionToolOptions {
   runtimeDir: string;
   addonSource: string | null;
   version: string;
+  /** Root the engine installer writes into (--engine-dir / CONDUIT_ENGINE_DIR). */
+  engineDir?: string;
+  /** CONDUIT_ENGINE_SOURCE: a local zip or directory instead of the download. */
+  engineSource?: string | null;
   /** Records the outcome so gd_status can report it (see index.ts). */
   onInstallOutcome?: (outcome: { error: string | null; source: string | null }) => void;
 }
@@ -306,6 +312,84 @@ export function registerSessionTools(
           ...detectAddon(options.projectPath, options.version),
         });
       } catch (error) {
+        return toToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "gd_engine_status",
+    {
+      description:
+        "Report whether a Godot engine binary is available and whether one is already running. Call this before gd_editor_launch or gd_engine_install: an editor the human already has open needs neither. Reports the resolved binary and where it came from, any Godot process this broker did not start, and which engine builds this broker has installed.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async () => {
+      try {
+        const resolved = options.godot.resolve();
+        const presence = await editorPresence(manager);
+        return textResult({
+          binary: resolved?.path ?? null,
+          source: resolved?.source ?? null,
+          searched: resolved ? undefined : searchedLocations(),
+          engine_dir: options.engineDir ?? engineDir(),
+          installed: listInstalledEngines(options.engineDir ?? engineDir()),
+          editor_connected: presence.connected,
+          editor_running_unbridged: presence.foreign.length > 0,
+          running_processes: presence.foreign,
+          process_probe_ran: presence.probed,
+          advice: foreignEditorAdvice(presence),
+        });
+      } catch (error) {
+        return toToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "gd_engine_install",
+    {
+      description:
+        "Download and install a Godot editor into the broker's engine directory, then use it for gd_editor_launch. Only needed when no engine is present: check gd_engine_status first, because an editor already running needs none. Installs the standard build unless mono=true, which installs the .NET build for C# projects.",
+      inputSchema: {
+        version: z
+          .string()
+          .describe('Release tag such as "4.7.1-stable". Omitted installs the latest stable release.')
+          .optional(),
+        mono: z.boolean().describe("Install the .NET/C# build (Godot Mono) instead of the standard one.").optional(),
+        source: z.string().describe("A local zip or directory to install from instead of downloading.").optional(),
+        force: z.boolean().describe("Replace an install already in that directory.").optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        const presence = await editorPresence(manager);
+        const result = await installEngine({
+          version: (args.version as string | undefined) ?? null,
+          mono: args.mono === true,
+          engineDir: options.engineDir ?? engineDir(),
+          source: (args.source as string | undefined) ?? options.engineSource ?? null,
+          force: args.force === true,
+        });
+        // A newly installed engine is only useful if resolution stops returning
+        // the cached "nothing found" from before it existed.
+        options.godot.reset();
+        return textResult({
+          ...result,
+          // Reported rather than refused: installing the .NET build while a
+          // standard editor is open is legitimate. The agent still needs to know
+          // it may have been unnecessary.
+          editor_connected: presence.connected,
+          note: presence.connected
+            ? "an editor was already connected; this install was probably unnecessary"
+            : (foreignEditorAdvice(presence) ?? undefined),
+        });
+      } catch (error) {
+        if (error instanceof EngineError) {
+          return toToolError(new BridgeError({ code: error.code, message: error.message, retryable: error.retryable }));
+        }
         return toToolError(error);
       }
     },

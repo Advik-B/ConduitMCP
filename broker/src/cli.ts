@@ -34,6 +34,12 @@ export interface CliOptions {
   auditLog?: string;
   auditMaxBytes?: number;
   toolGroups?: string;
+  installGodot?: boolean;
+  godotVersion?: string;
+  godotMono?: boolean;
+  engineDir?: string;
+  engineSource?: string;
+  autoInstallGodot?: boolean;
 }
 
 export { CommanderError };
@@ -93,14 +99,27 @@ export function buildProgram(version: string): Command {
     .addOption(
       new Option("--audit-max-bytes <n>", "rotate the audit log past this size").argParser(positiveInt("--audit-max-bytes")),
     )
-    .addOption(new Option("--tool-groups <list>", "comma list of tool groups to keep, or -group entries to drop"));
+    .addOption(new Option("--tool-groups <list>", "comma list of tool groups to keep, or -group entries to drop"))
+    // Deliberately a boolean with the tag on a separate option rather than
+    // "--install-godot [version]". An optional-argument option lands in
+    // checkMissingValues' takesValue set, which would reject the correct
+    // "--install-godot --engine-dir /x" as a missing value. The separate flag is
+    // also what the unattended install path needs, which cannot pass a
+    // positional at all.
+    .addOption(new Option("--install-godot", "download and install the Godot engine, then exit"))
+    .addOption(new Option("--godot-version <tag>", 'engine release to install, for example "4.7.1-stable" (default: latest)'))
+    .addOption(new Option("--godot-mono", "install the .NET/C# engine build instead of the standard one"))
+    .addOption(new Option("--engine-dir <path>", "where installed engines live (default: ~/.conduit/engines)"))
+    .addOption(new Option("--engine-source <path|url>", "engine zip or directory to install from instead of downloading"))
+    .addOption(new Option("--auto-install-godot", "install an engine automatically when none is found"))
+    .addOption(new Option("--no-auto-install-godot", "never install an engine automatically"));
 
   program.addHelpText(
     "after",
     () =>
       "\nTool groups (--tool-groups), keeping a list or dropping -entries:\n" +
       `  ${TOOL_GROUPS.join(", ")}\n` +
-      "  core (ping, status, events, session, addon) is always registered.\n" +
+      "  core (ping, status, events, session, addon, engine) is always registered.\n" +
       "\nEvery option has a CONDUIT_ environment variable equivalent; the option wins.\n" +
       "Full reference: https://github.com/Advik-B/ConduitMCP/blob/master/docs/environment.md\n",
   );

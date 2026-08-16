@@ -67,6 +67,8 @@ const EXPECTED_TOOLS = [
   "gd_editor_select",
   "gd_editor_set_main_screen",
   "gd_editor_ui",
+  "gd_engine_install",
+  "gd_engine_status",
   "gd_export_presets",
   "gd_export_project",
   "gd_file_delete",

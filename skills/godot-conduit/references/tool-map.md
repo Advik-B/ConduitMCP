@@ -40,7 +40,9 @@ diagnosable and completable.
 | `gd_addon_status` | broker | Whether the directory is a Godot project, and whether the addon is missing, current, stale, or unmanaged. |
 | `gd_addon_install` | broker | Installs or repairs the addon and registers the `ConduitRuntime` autoload. Refused while an editor is connected. |
 | `gd_project_scaffold` | broker | Creates a minimal project in an empty directory. The one capability that cannot require an editor. |
-| `gd_editor_launch` | broker | Spawns the editor on the configured project and waits for its bridge. `headless=true` for scripted sessions. |
+| `gd_engine_status` | broker | Whether an engine binary is available, whether a Godot is already running that the broker did not start, and which builds it has installed. Call before launching or installing. |
+| `gd_engine_install` | broker | Downloads a Godot editor into the broker's engine directory. `mono=true` for the .NET/C# build. Only needed when no engine is present. |
+| `gd_editor_launch` | broker | Spawns the editor on the configured project and waits for its bridge. `headless=true` for scripted sessions. Refuses when a Godot it did not start is already running. |
 | `gd_editor_quit` | broker | Asks the editor to quit and confirms it exited. Unsaved editor state is discarded. |
 
 ## Running and observing the game (runtime)

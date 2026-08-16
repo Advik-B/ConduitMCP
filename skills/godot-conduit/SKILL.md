@@ -107,7 +107,10 @@ These produce dead ends rather than error messages you can act on:
 - `gd_editor_launch` is optional, never a required first step. The human may already have the
   project open. An editor started without the opt-in does not show as connected, so absence of a
   bridge is not absence of an editor; launching then puts a second editor on a project Godot
-  expects to own for its session. `gd_status` first, always.
+  expects to own for its session. `gd_status` orients; `gd_engine_status` is the one that looks
+  for a Godot the broker did not start, and is what to call before launching or installing.
+- `gd_engine_install` is for a machine with no Godot at all. An editor that is already running is
+  proof there is an engine, so rule that out before downloading one.
 - `gd_addon_install` is refused while an editor is connected, because Godot binds a GDExtension
   only at startup. Quit, install, relaunch.
 - `gd_autoload` and `gd_input_map` write `project.godot`. They apply to *subsequently launched*
