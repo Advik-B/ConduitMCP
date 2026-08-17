@@ -218,7 +218,7 @@ A typical MCP client entry needs none of these:
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "conduit-mcp-server@0.7.0", "--project", "/absolute/path/to/your-godot-project"]
+      "args": ["-y", "conduit-mcp-server@0.7.1", "--project", "/absolute/path/to/your-godot-project"]
     }
   }
 }
@@ -241,7 +241,7 @@ A first-run entry that installs the addon and enables game-side tools:
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "conduit-mcp-server@0.7.0", "--project", "/absolute/path/to/your-godot-project"],
+      "args": ["-y", "conduit-mcp-server@0.7.1", "--project", "/absolute/path/to/your-godot-project"],
       "env": {
         "CONDUIT_AUTO_INSTALL": "1",
         "CONDUIT_ENABLE": "1"
