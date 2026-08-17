@@ -21,14 +21,14 @@ jobs:
         os: [ubuntu-22.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.11
+          bun-version: 1.3.14
       - run: cargo build --release --workspace
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -51,13 +51,13 @@ jobs:
     env:
       GODOT_VERSION: 4.7.1-stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.11
-      - uses: actions/cache@v4
+          bun-version: 1.3.14
+      - uses: actions/cache@v6
         with:
           path: tools/godot
           key: godot-${{ runner.os }}-${{ env.GODOT_VERSION }}

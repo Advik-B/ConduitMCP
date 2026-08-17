@@ -1,7 +1,7 @@
 # API gaps and environment notes
 
 Where the whitepaper's assumed API differs from the gdext/Godot version in use
-(gdext 0.5.4, Godot 4.7.1), or where an environment constraint shaped the
+(gdext 0.5.5, Godot 4.7.1), or where an environment constraint shaped the
 implementation, it is recorded here rather than silently worked around (CLAUDE.md
 "When stuck").
 
@@ -39,7 +39,7 @@ engine-free (plain Rust structs) and unit-tested, while `Variant` round-trips
 remain covered by the phase 8 eval. Remaining untagged types (`RID`,
 `Callable`, `Signal`, `PackedVector4Array`) stringify on output.
 
-## Typed collections in gdext 0.5.4
+## Typed collections in gdext 0.5.5
 
 `Dictionary` and `Array` are generic in this gdext version; the untyped forms are
 `VarDictionary` (`Dictionary<Variant, Variant>`) and `VarArray`
@@ -203,7 +203,7 @@ while our own borrow is on the stack. Use non-blocking `scan()`/
 `scan_sources()` plus polling `is_scanning()` instead.
 
 An earlier form of this note claimed `Object` has no public
-`set_script`/`get_script`; that is stale. gdext 0.5.4 provides both as
+`set_script`/`get_script`; that is stale. gdext 0.5.5 provides both as
 type-safe replacements (`get_script() -> Option<Gd<Script>>`), and phase 9's
 project-tools discovery uses them. The undo-wrapped `script` property writes
 here still go through the generic dynamic property API because undo recording
@@ -647,7 +647,7 @@ game's stderr to a log so a failed dynamic call is diagnosable.
 
 ### Navigation classes are gated behind gdext's experimental API feature
 
-gdext 0.5.4 generates no bindings for `NavigationServer2D/3D` or
+gdext 0.5.5 generates no bindings for `NavigationServer2D/3D` or
 `NavigationRegion2D/3D` unless the `experimental-godot-api` feature is enabled
 (Godot marks the navigation classes experimental). Per the working instructions,
 `gd_physics` reaches them dynamically instead of flipping the feature:
