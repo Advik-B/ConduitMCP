@@ -56,7 +56,7 @@ sun_path". Linux `/tmp` is fine; on macOS the default temp dir (`/var/folders/..
 runs long, so the acceptance harness deliberately roots its runtime dir at `/tmp`.
 This limit does not apply on Windows, whose transport is a named pipe.
 
-## Cross-platform transport: Windows named pipes need a two-thread serve
+## Cross-platform transport: Windows named pipes need a three-thread serve
 
 The broker-to-bridge transport is per-platform: a Unix-domain filesystem socket
 on Linux/macOS, a named pipe (`\\.\pipe\conduit-{role}-{hash}`) on Windows, both
@@ -73,21 +73,41 @@ blocking duplex is reliable. The single-thread non-blocking serve loop that Unix
 uses therefore cannot run over named pipes.
 
 Resolution: the Windows serve path (`serve_split`, cfg-gated) uses blocking I/O
-with `Stream::split()` and the read and write halves on separate threads -- a
-reader parked in a blocking read feeding `inbound_tx`, and a writer draining
-`outbound_rx`/`event_rx` with blocking writes. Backpressure `busy` responses are
-routed from the reader to the writer over an internal channel rather than written
-to the pipe directly (only one thread may write). This preserves the
-write-while-blocked-on-read property that deferred `await` completions and
-debugger events require, validated by the phase 1 stress acceptance on Windows.
-The proven Unix non-blocking loop is left unchanged. An opt-in loopback TCP
-fallback (`CONDUIT_TCP`) exists for the editor connection.
+with `Stream::split()` over three threads -- a reader parked in a blocking read
+feeding `inbound_tx`, a writer owning the send half because only one thread may
+write the pipe, and the accept thread as supervisor, moving
+`outbound_rx`/`event_rx` into the writer's queue, running the heartbeat, and
+holding the write deadline the blocking calls cannot carry themselves (see the
+liveness section). Backpressure `busy` responses are routed from the reader
+through the same queue. This preserves the write-while-blocked-on-read property
+that deferred `await` completions and debugger events require, validated by the
+phase 1 stress acceptance on Windows. The proven Unix non-blocking loop is left
+unchanged. An opt-in loopback TCP fallback (`CONDUIT_TCP`) exists for the editor
+connection.
 
-One shutdown caveat: a Windows reader thread parked in a blocking read is
-detached, not joined, so joining it can never hang `Listener::stop()`; it ends
-when the peer disconnects or the process exits. Phase 9 found a different stop
-hazard in this same function (a second stop from Drop blocking in the wake
-connect) and made `stop()` idempotent; see the phase 9 section.
+One shutdown caveat: a Windows reader or writer thread parked in a blocking pipe
+call is detached, not joined, so joining it can never hang `Listener::stop()`; it
+ends when the peer disconnects or the process exits. That last part is why
+`serve_split` waits `WRITE_DRAIN_GRACE` (250 ms) for the writer's backlog on the
+way out instead of returning immediately: closing the queue does not discard what
+it holds, but a stop is usually followed by process teardown, which would take the
+writer with it, and the frame at risk is the response to the command that ended
+the session. The wait is bounded so a peer that is not reading cannot delay
+shutdown. Phase 9 found a different stop hazard in this same function (a second
+stop from Drop blocking in the wake connect) and made `stop()` idempotent; see the
+phase 9 section.
+
+One park is not reachable from this layer. When the write deadline fires, the
+writer is inside a chunk write, so it never reaches its own final flush and drops
+the send half with `needs_flush` set; `interprocess` then hands the handle to its
+linger pool (`src/os/windows/linger_pool.rs`), which flushes it -- and
+`FlushFileBuffers` on a pipe does not return until the peer has read everything.
+That pool is process-wide: one persistent thread over a shared queue, with
+overflow threads only once the queue is full, so a peer holding it there can delay
+other lingered handles behind it. `evade_limbo`/`assume_flushed` exist only on the
+concrete `PipeStream`, not on the `local_socket::SendHalf` enum we hold, so the
+bridge cannot opt out. A peer whose process exits fails the flush immediately;
+only a live peer that holds the pipe and never reads keeps it parked.
 
 ## Windows debug pack export cannot include the out-of-project bridge library
 
@@ -572,11 +592,43 @@ in `broker/tests/ipc-client.test.ts`, and the orphan case in `bun run handshake`
 The Rust and TypeScript timings are scaled down under test so the assertions cost
 milliseconds rather than a half-minute each.
 
-One limitation remains on Windows. `serve_split` writes with blocking calls,
-which cannot carry the deadline `write_framed_bytes` has, so a peer that stops
-reading while the bridge has frames to write can still park the writer thread for
-as long as the OS pipe buffer allows. The idle path, which is where the heartbeat
-lives, is unaffected.
+Windows needed a second mechanism for the fourth case, because `serve_split`
+writes with blocking calls and a blocking call cannot carry the deadline
+`write_framed_bytes` has. It was worse than "a peer that stops reading while
+frames are queued": every write went through `protocol::write_frame`, which ends
+in `flush()`, and `flush` on a pipe send half is `FlushFileBuffers`, documented as
+not returning until the peer has consumed everything buffered. One small response
+was therefore enough to park the writer -- and the writer was the accept thread,
+so `serve_split` never returned and the accept slot was never freed. The hello
+frame did it before the link was even marked connected. The 512-byte default
+`output_buffer_size_hint` on the listener's instances meant the write itself
+blocked early too.
+
+The deadline is now enforced from outside the write. The send half belongs to a
+`conduit-ipc-write` thread that writes in 64 KiB chunks and reports each one;
+the accept thread only queues frames and watches, and abandons the connection
+after `WRITE_STALL_TIMEOUT` with outstanding work and no progress. Four
+properties that are easy to lose:
+
+- The stall check runs on every pass, not from the idle branch. A peer that stops
+  reading while the dispatcher keeps producing has something to queue every time
+  round and never goes idle, which is the original failure.
+- Only a chunk written, or work arriving on an idle writer, counts as progress.
+  Stamping every enqueue looks equivalent and defeats the whole deadline: the
+  heartbeat queues a ping every `PING_AFTER`, which is well inside the deadline, so
+  the clock would restart forever on a writer that has moved nothing. Observed as
+  the new test hanging for its full 90-second settle.
+- Nothing flushes between frames. A flush is a park with no progress to report,
+  which would make a merely slow peer look stalled; the bytes reach the peer from
+  `WriteFile` alone. One flush runs after the last frame, on the writer thread.
+- The chunk size is the progress granularity, so it sets how slowly a live peer
+  may drain before being mistaken for a stalled one: one chunk per deadline, about
+  3 KiB/s. It is not what bounds the stall -- the supervisor is.
+
+Covered by `a_peer_that_stops_reading_is_dropped_and_the_listener_serves_the_next_one`
+in `bridge/tests/transport_liveness.rs`, over the real pipe with the shipped
+constants. It answers no ping, so the liveness deadline stays unarmed and the
+write-stall deadline is the only thing that can free the listener.
 
 ### gd_play from a headless editor remains unproven
 

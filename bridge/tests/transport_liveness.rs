@@ -4,15 +4,16 @@
 //! TCP, which every platform can run but which reaches only one of the two serve
 //! models: `accept_loop_tcp` into `serve_nonblocking`. On Windows the shipping
 //! transport is a named pipe served by `accept_loop_pipe` into `serve_split`, a
-//! separate implementation with its own reader/writer split and its own copy of
-//! the heartbeat, and nothing else in the repository binds a pipe from a test.
-//! This file is what covers it, by resolving whatever endpoint the platform
-//! actually uses and driving it end to end.
+//! separate implementation with its own reader, writer, and supervisor threads
+//! and its own copy of the heartbeat, and nothing else in the repository binds a
+//! pipe from a test. This file is what covers it, by resolving whatever endpoint
+//! the platform actually uses and driving it end to end.
 //!
 //! Unlike the unit tests, this links the normal library build, so the
 //! `#[cfg(test)]` timing overrides do not apply and the shipped five-second ping
-//! and twenty-second deadline are what run. That is deliberate: it is the one
-//! place the real constants are exercised, and it costs about half a minute.
+//! and twenty-second liveness and write-stall deadlines are what run. That is
+//! deliberate: it is the one place the real constants are exercised, and the
+//! tests run in parallel, so the file costs about as long as its slowest case.
 
 use std::io::Read;
 use std::time::{Duration, Instant};
@@ -56,7 +57,7 @@ struct Harness {
     listener: Listener,
     status: LinkStatus,
     display: String,
-    _channels: CommandChannels,
+    channels: CommandChannels,
 }
 
 /// Bind a listener on an endpoint unique to `key`.
@@ -86,7 +87,7 @@ fn start(key: &str) -> Harness {
         status.clone(),
     )
     .expect("listener binds the native endpoint");
-    Harness { listener, status, display, _channels: channels }
+    Harness { listener, status, display, channels }
 }
 
 /// Connect over the same local-socket API the bridge binds with, which is the
@@ -184,6 +185,52 @@ fn a_silent_peer_is_dropped_and_the_listener_serves_the_next_one() {
     let mut second_decoder = FrameDecoder::new();
     let greeted_again = read_until(&mut second, &mut second_decoder, SETTLE, |value| value.get("hello").map(|_| ()));
     assert!(greeted_again.is_some(), "the listener did not serve a second client");
+    assert!(wait_for_state(&h.status, LinkState::Connected, SETTLE));
+
+    drop(client);
+    drop(second);
+    h.listener.stop();
+}
+
+#[test]
+fn a_peer_that_stops_reading_is_dropped_and_the_listener_serves_the_next_one() {
+    // The write side of the same contract. A peer that holds the connection open
+    // but stops reading is as dead to us as one that closed, and the bridge must
+    // give up on it within the write-stall deadline instead of parking its writer
+    // for as long as the transport allows.
+    let mut h = start("stops-reading");
+
+    let mut client = connect(&h.display);
+    let mut decoder = FrameDecoder::new();
+    assert!(read_until(&mut client, &mut decoder, SETTLE, |v| v.get("hello").map(|_| ())).is_some());
+    assert!(wait_for_state(&h.status, LinkState::Connected, SETTLE));
+
+    // The client never reads again and never answers a ping. The liveness
+    // deadline arms only after a pong, so with no pong the only thing that can
+    // return this listener to Listening is the write-stall deadline, which is
+    // what makes the assertion below mean what it says.
+    //
+    // The small frame first is the case that a per-frame flush parks on all by
+    // itself; the bulk then puts the write path far past any pipe or socket
+    // buffer. The bytes need not be valid JSON: nothing ever reads them.
+    h.channels.event_tx.send(vec![b'x'; 256]).expect("queue a small event");
+    let bulk = vec![b'x'; 1024 * 1024];
+    for _ in 0..64 {
+        h.channels.event_tx.send(bulk.clone()).expect("queue a bulk event");
+    }
+
+    assert!(
+        wait_for_state(&h.status, LinkState::Listening, SETTLE),
+        "a peer that stopped reading should be dropped, not park the writer"
+    );
+
+    // Same property as the silent-peer case: the accept slot is usable again.
+    let mut second = connect(&h.display);
+    let mut second_decoder = FrameDecoder::new();
+    assert!(
+        read_until(&mut second, &mut second_decoder, SETTLE, |v| v.get("hello").map(|_| ())).is_some(),
+        "the listener did not serve a second client"
+    );
     assert!(wait_for_state(&h.status, LinkState::Connected, SETTLE));
 
     drop(client);

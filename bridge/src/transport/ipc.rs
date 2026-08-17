@@ -11,16 +11,19 @@
 //! fallback exists for the editor endpoint. The three share one framing and one
 //! channel wiring. The serve model differs by transport: Unix sockets and TCP
 //! use a single non-blocking thread that multiplexes read, responses, and
-//! events; Windows named pipes must use blocking I/O with the read and write
-//! halves on separate threads, because interprocess's non-blocking mode sets the
-//! legacy PIPE_NOWAIT flag which is broken for duplex use (see docs/api-gaps.md).
+//! events; Windows named pipes must use blocking I/O, because interprocess's
+//! non-blocking mode sets the legacy PIPE_NOWAIT flag which is broken for duplex
+//! use (see docs/api-gaps.md). A blocking call cannot carry a deadline, so the
+//! pipe path takes three threads: a reader, a writer owning the only handle that
+//! touches the pipe, and a supervisor that watches the writer's progress and
+//! abandons the connection when it stops.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -31,10 +34,10 @@ use interprocess::local_socket::traits::{Listener as _, Stream as _};
 use interprocess::local_socket::{GenericNamespaced, ToNsName};
 #[cfg(unix)]
 use interprocess::local_socket::{GenericFilePath, ToFsName};
+#[cfg(windows)]
+use interprocess::local_socket::SendHalf;
 use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, Stream};
 
-#[cfg(windows)]
-use crate::protocol::write_frame;
 use crate::protocol::{ping_payload, pong_payload, BridgeError, Command, FrameDecoder, Response};
 use crate::transport::status::LinkStatus;
 
@@ -67,6 +70,24 @@ const PING_AFTER: Duration = Duration::from_millis(100);
 const LIVENESS_TIMEOUT: Duration = Duration::from_millis(400);
 #[cfg(test)]
 const WRITE_STALL_TIMEOUT: Duration = Duration::from_millis(400);
+
+/// How much of a frame one blocking pipe write may cover. A blocking `WriteFile`
+/// returns only when the whole requested count is written, so this is also the
+/// granularity at which the writer thread can report progress, and therefore the
+/// slowest a live peer may drain without being mistaken for a stalled one: one
+/// chunk per [`WRITE_STALL_TIMEOUT`], around 3 KiB/s at these values. The
+/// chunking is what makes progress observable; the supervisor is what bounds the
+/// stall.
+#[cfg(windows)]
+const WRITE_CHUNK: usize = 64 * 1024;
+
+/// How long a finished connection waits for the writer to put already-queued
+/// frames on the pipe. A stop is usually followed by process teardown, which would
+/// take the writer thread with it, and the last frame of a session is typically
+/// the response to the command that ended it. Bounded because a peer that is not
+/// reading must not delay shutdown.
+#[cfg(windows)]
+const WRITE_DRAIN_GRACE: Duration = Duration::from_millis(250);
 
 /// The facts that decide whether the command listener may bind. Kept as plain
 /// booleans so the decision is pure and fully testable; the plugin fills them
@@ -689,13 +710,137 @@ impl Liveness {
     }
 }
 
-/// Serve one Windows named-pipe connection with blocking I/O and the read and
-/// write halves on separate threads. interprocess's non-blocking mode is
-/// unusable here (see the module docs), so the reader parks in a blocking read
-/// while the writer emits dispatcher responses and unsolicited events whenever
-/// they are ready. The reader routes its own out-of-band responses (busy
-/// backpressure, malformed-frame errors) to the writer rather than touching the
-/// pipe directly, since only one thread may write.
+/// Progress on the pipe's write half, shared by the thread that owns it and the
+/// supervisor that holds its deadline.
+///
+/// A blocking write cannot time out in place, so the deadline of
+/// [`write_framed_bytes`] has to be enforced from outside: the writer reports
+/// movement here and the supervisor decides when there has been none for long
+/// enough.
+#[cfg(windows)]
+struct WriteState {
+    /// Frames queued or in flight. Raised before a frame becomes visible to the
+    /// writer and lowered only once it is fully out, so zero means nothing is
+    /// left to write. A channel emptiness check plus an idle flag would have a
+    /// window, in either check order, where the last frame is in neither, which
+    /// would let the supervisor exit while a response was still unwritten.
+    inflight: AtomicUsize,
+    /// Millis since `epoch` at the last chunk written, or at the moment work
+    /// became outstanding at all. Only those two: stamping every enqueue would let
+    /// the heartbeat reset the clock every `PING_AFTER` on a writer that is making
+    /// no progress whatsoever, and the deadline would never fire.
+    stamp: AtomicU64,
+    /// Set by the writer when the pipe refused a write; the connection is over.
+    broken: AtomicBool,
+    epoch: Instant,
+}
+
+#[cfg(windows)]
+impl WriteState {
+    fn new(epoch: Instant) -> Self {
+        WriteState {
+            inflight: AtomicUsize::new(0),
+            stamp: AtomicU64::new(0),
+            broken: AtomicBool::new(false),
+            epoch,
+        }
+    }
+
+    fn stamp_progress(&self) {
+        self.stamp.store(self.epoch.elapsed().as_millis() as u64, Ordering::SeqCst);
+    }
+
+    fn since_progress(&self) -> Duration {
+        self.epoch.elapsed().saturating_sub(Duration::from_millis(self.stamp.load(Ordering::SeqCst)))
+    }
+}
+
+/// The supervisor's end of the pipe writer: every byte the bridge sends goes in
+/// here, and the answers to "is anything outstanding" and "has it moved" come
+/// back out.
+#[cfg(windows)]
+struct WriteQueue {
+    frames: Sender<Vec<u8>>,
+    state: Arc<WriteState>,
+}
+
+#[cfg(windows)]
+impl WriteQueue {
+    /// Frame a payload and hand it to the writer. False means the writer thread
+    /// is gone, which ends the connection.
+    fn push(&self, payload: &[u8]) -> bool {
+        // Start the clock only when work appears on an idle writer. A later frame
+        // is not progress on the frame ahead of it.
+        if self.state.inflight.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.state.stamp_progress();
+        }
+        if self.frames.send(frame_bytes(payload)).is_err() {
+            self.state.inflight.fetch_sub(1, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    fn pending(&self) -> bool {
+        self.state.inflight.load(Ordering::SeqCst) > 0
+    }
+
+    fn broken(&self) -> bool {
+        self.state.broken.load(Ordering::SeqCst)
+    }
+
+    /// Whether outstanding work has gone nowhere for [`WRITE_STALL_TIMEOUT`].
+    fn stalled(&self) -> bool {
+        self.pending() && self.state.since_progress() >= WRITE_STALL_TIMEOUT
+    }
+}
+
+/// Own the pipe's write half and put framed bytes on it, chunk by chunk so that
+/// progress on a write nobody can interrupt is still visible to the supervisor.
+///
+/// Deliberately does not flush between frames. `flush` on a pipe send half is
+/// `FlushFileBuffers`, which does not return until the peer has consumed
+/// everything buffered, so it would park with nothing to report and make a merely
+/// slow peer indistinguishable from one that stopped reading; the bytes reach the
+/// peer without it. The one flush after the last frame keeps the
+/// deliver-before-close behaviour, and runs here rather than on the supervisor,
+/// which by then has moved on.
+#[cfg(windows)]
+fn pipe_writer(mut send: SendHalf, frames: Receiver<Vec<u8>>, state: Arc<WriteState>) {
+    while let Ok(framed) = frames.recv() {
+        let mut written = 0;
+        while written < framed.len() {
+            let end = framed.len().min(written + WRITE_CHUNK);
+            match send.write(&framed[written..end]) {
+                Ok(0) => {
+                    state.broken.store(true, Ordering::SeqCst);
+                    return;
+                }
+                Ok(n) => {
+                    written += n;
+                    state.stamp_progress();
+                }
+                Err(err) if err.kind() == ErrorKind::Interrupted => {}
+                Err(err) => {
+                    eprintln!("conduit: pipe write error: {err}");
+                    state.broken.store(true, Ordering::SeqCst);
+                    return;
+                }
+            }
+        }
+        state.inflight.fetch_sub(1, Ordering::SeqCst);
+    }
+    let _ = send.flush();
+}
+
+/// Serve one Windows named-pipe connection with blocking I/O split across three
+/// threads. interprocess's non-blocking mode is unusable here (see the module
+/// docs), so the reader parks in a blocking read, a writer owns the pipe's write
+/// half because only one thread may write it, and this thread supervises: it
+/// moves dispatcher responses and unsolicited events into the write queue, runs
+/// the heartbeat, and enforces the write deadline the blocking calls cannot carry
+/// themselves. The reader routes its own out-of-band responses (busy
+/// backpressure, malformed-frame errors) through the same queue.
 #[cfg(windows)]
 fn serve_split(
     stream: Stream,
@@ -706,12 +851,30 @@ fn serve_split(
     stop: &Arc<AtomicBool>,
     status: &LinkStatus,
 ) {
-    let (mut recv, mut send) = stream.split();
+    let (mut recv, send) = stream.split();
+    let epoch = Instant::now();
 
     // Drain stale state before the hello, matching serve_nonblocking.
     while outbound_rx.try_recv().is_ok() {}
     while event_rx.try_recv().is_ok() {}
-    if write_frame(&mut send, hello_payload).is_err() {
+
+    let state = Arc::new(WriteState::new(epoch));
+    let (frames_tx, frames_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+    let queue = WriteQueue { frames: frames_tx, state: Arc::clone(&state) };
+    let writer = thread::Builder::new()
+        .name("conduit-ipc-write".to_string())
+        .spawn(move || pipe_writer(send, frames_rx, state))
+        .ok();
+    if writer.is_none() {
+        eprintln!("conduit: could not start the pipe writer thread");
+        return;
+    }
+
+    // The hello goes through the writer like every other frame (section 7.5), so
+    // a peer that connects and never reads cannot park this thread before the
+    // deadline exists. Connected therefore now means the hello is queued rather
+    // than flushed, which such a peer keeps for as long as the deadline allows.
+    if !queue.push(hello_payload) {
         return;
     }
     status.mark_connected();
@@ -722,11 +885,10 @@ fn serve_split(
     // the pipe, so a pong the reader owes goes through the writer like everything
     // else. Separate from local_tx because a pong is not a Response.
     let (raw_tx, raw_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
-    // Liveness state the reader observes and the writer acts on, since the read
-    // and write halves are on different threads here.
+    // Liveness state the reader observes and the supervisor acts on, since the
+    // read and write halves are on different threads here.
     let last_input = Arc::new(AtomicU64::new(0));
     let armed = Arc::new(AtomicBool::new(false));
-    let epoch = Instant::now();
 
     let reader = {
         let inbound_tx = inbound_tx.clone();
@@ -779,61 +941,79 @@ fn serve_split(
             .ok()
     };
 
-    // Writer (this thread): drain io-generated responses first, then dispatcher
-    // responses, then events, all with blocking writes.
+    // Supervisor (this thread): queue io-generated responses first, then
+    // dispatcher responses, then events, in that order so an event never precedes
+    // the response to the command that induced it.
     let mut last_ping: Option<Instant> = None;
     let mut ping_seq = 0u64;
     while !stop.load(Ordering::SeqCst) {
         let mut did_work = false;
-        let mut broken = false;
+        let mut writer_gone = false;
 
         while let Ok(payload) = raw_rx.try_recv() {
             did_work = true;
-            if write_frame(&mut send, &payload).is_err() {
-                broken = true;
+            if !queue.push(&payload) {
+                writer_gone = true;
                 break;
             }
         }
 
         for source in [&local_rx, outbound_rx] {
+            if writer_gone {
+                break;
+            }
             while let Ok(response) = source.try_recv() {
                 did_work = true;
-                if write_frame(&mut send, &response.to_bytes()).is_err() {
-                    broken = true;
+                if !queue.push(&response.to_bytes()) {
+                    writer_gone = true;
                     break;
                 }
             }
-            if broken {
-                break;
-            }
         }
-        if !broken {
+        if !writer_gone {
             while let Ok(payload) = event_rx.try_recv() {
                 did_work = true;
-                if write_frame(&mut send, &payload).is_err() {
-                    broken = true;
+                if !queue.push(&payload) {
+                    writer_gone = true;
                     break;
                 }
             }
         }
 
-        if broken {
+        if writer_gone || queue.broken() {
             break;
         }
+
+        // The deadline the blocking writes cannot carry themselves, and the reason
+        // this thread does nothing else that can block. It is checked on every
+        // pass and not from the idle branch below on purpose: a peer that stops
+        // reading while the dispatcher keeps producing has something to queue
+        // every time round, so it never goes idle, and that is exactly the case
+        // that used to pin this thread for as long as the pipe buffer allowed.
+        if queue.stalled() {
+            eprintln!(
+                "conduit: peer stopped reading for {}s, dropping the connection so another can attach",
+                WRITE_STALL_TIMEOUT.as_secs()
+            );
+            break;
+        }
+
         // The connection is finished once the reader saw EOF and nothing is left
-        // to flush. The reader thread is detached (not joined) so a stop while it
-        // is parked in a blocking read does not hang the accept thread; it ends
-        // when the peer disconnects or the process exits (see docs/api-gaps.md).
+        // to write, queued or in flight. Both worker threads are detached (not
+        // joined) so a stop while one is parked in a blocking pipe call does not
+        // hang the accept thread; they end when the peer disconnects or the
+        // process exits (see docs/api-gaps.md).
         if reader_done.load(Ordering::SeqCst)
             && raw_rx.is_empty()
             && local_rx.is_empty()
             && outbound_rx.is_empty()
             && event_rx.is_empty()
+            && !queue.pending()
         {
             break;
         }
         if !did_work {
-            // Same liveness contract as serve_nonblocking, split across the two
+            // Same liveness contract as serve_nonblocking, split across the
             // threads: the reader stamps inbound, this thread asks and decides.
             let silent = epoch.elapsed().saturating_sub(Duration::from_millis(last_input.load(Ordering::Relaxed)));
             if armed.load(Ordering::Relaxed) && silent >= LIVENESS_TIMEOUT {
@@ -846,7 +1026,7 @@ fn serve_split(
             if silent >= PING_AFTER && !last_ping.is_some_and(|sent| sent.elapsed() < PING_AFTER) {
                 ping_seq += 1;
                 last_ping = Some(Instant::now());
-                if write_frame(&mut send, &ping_payload(ping_seq)).is_err() {
+                if !queue.push(&ping_payload(ping_seq)) {
                     break;
                 }
                 continue;
@@ -854,7 +1034,18 @@ fn serve_split(
             thread::sleep(Duration::from_micros(500));
         }
     }
-    drop(send);
+    // Dropping the queue does not discard what it holds: a disconnected channel
+    // still yields its contents, so the writer finishes the backlog and then
+    // flushes and exits. This waits [`WRITE_DRAIN_GRACE`] for that, because a stop
+    // is usually followed by process teardown and the writer would go with it.
+    // Never a join: a thread parked in a blocking pipe call is exactly what
+    // Listener::stop() must not wait on.
+    let grace = Instant::now() + WRITE_DRAIN_GRACE;
+    while queue.pending() && !queue.broken() && Instant::now() < grace {
+        thread::sleep(Duration::from_micros(500));
+    }
+    drop(queue);
+    drop(writer);
     drop(reader);
 }
 
@@ -918,13 +1109,20 @@ fn decode_command(frame: &[u8]) -> DecodeOutcome {
     }
 }
 
+/// Length-prefix a payload into one buffer, so a partial write can never split
+/// the header from the body it describes.
+fn frame_bytes(payload: &[u8]) -> Vec<u8> {
+    let mut framed = Vec::with_capacity(payload.len() + 4);
+    framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    framed.extend_from_slice(payload);
+    framed
+}
+
 /// Length-prefix and write a payload on a non-blocking stream, retrying on
 /// `WouldBlock`. Shared by the hello frame and every response in the
 /// non-blocking serve model.
 fn write_framed_bytes<S: NbStream>(stream: &mut S, payload: &[u8], stop: &Arc<AtomicBool>) -> std::io::Result<()> {
-    let mut framed = Vec::with_capacity(payload.len() + 4);
-    framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    framed.extend_from_slice(payload);
+    let framed = frame_bytes(payload);
 
     let mut written = 0;
     // A peer that stops reading is as dead to us as one that closed, and without
