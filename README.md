@@ -180,7 +180,7 @@ The bridge library lands in `target/release/`; `bridge/conduit.gdextension` show
 
 ## Status and compatibility
 
-All nine roadmap phases of the [whitepaper](docs/conduit-whitepaper.md) are implemented, with scripted acceptance checks per phase. Tested pairing: Godot 4.7.1 with gdext 0.5.4; the addon declares `compatibility_minimum 4.4`. Platform notes and known engine API gaps are tracked in [docs/api-gaps.md](docs/api-gaps.md).
+All nine roadmap phases of the [whitepaper](docs/conduit-whitepaper.md) are implemented, with scripted acceptance checks per phase. Tested pairing: Godot 4.7.1 with gdext 0.5.5; the addon declares `compatibility_minimum 4.4`. Platform notes and known engine API gaps are tracked in [docs/api-gaps.md](docs/api-gaps.md).
 
 ## License
 
