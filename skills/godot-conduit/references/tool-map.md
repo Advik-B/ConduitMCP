@@ -152,6 +152,7 @@ Not undo-wrapped: these write `project.godot` or act on editor state directly.
 | --- | --- | --- |
 | `gd_asset_add` | assets | Writes base64 bytes to a project path and waits for the import to settle. Returns the imported type and `uid://`. |
 | `gd_asset_reimport` | assets | Reimports an asset after its import settings changed. |
+| `gd_import_settings` | assets | Reads (`op=get`) or writes (`op=set`) an asset's `.import` options, reimporting after a write unless `reimport=false`. An option the asset does not already have is an error, not a silent insert. |
 | `gd_file_move` | files | Moves or renames a file, carrying its `.uid` sidecar so `uid://` references survive. Plain `res://` references are not rewritten. |
 | `gd_file_delete` | files | Deletes a file with its `.uid` and `.import` sidecars. |
 | `gd_export_presets` | export | Lists presets from `export_presets.cfg`. |

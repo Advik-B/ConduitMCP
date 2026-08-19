@@ -419,6 +419,14 @@ export const T0_COVERAGE: CoverageRule[] = [
   { tool: "gd_asset_add", classes: ["EditorFileSystem"], members: ["scan", "get_filesystem", "update_file"], side: "editor" },
   { tool: "gd_asset_reimport", classes: ["EditorFileSystem"], members: ["reimport_files"], side: "editor" },
   {
+    tool: "gd_import_settings",
+    ops: ["get", "set"],
+    classes: ["ConfigFile"],
+    members: ["load", "save", "get_value", "set_value", "has_section", "has_section_key", "get_section_keys"],
+    side: "editor",
+    note: "An .import sidecar is a ConfigFile, so this is the class the handler actually drives. The importer's own option list stays out of reach: ResourceImporter has no handle (docs/api-gaps.md).",
+  },
+  {
     tool: "gd_file_move",
     classes: ["ResourceUID"],
     members: ["get_id_path", "set_id"],

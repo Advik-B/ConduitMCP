@@ -94,6 +94,7 @@ impl HandlerRegistry {
         handlers.insert("gd_editor_window_info", editor::pixel::window_info);
         handlers.insert("gd_asset_add", editor::assets::add);
         handlers.insert("gd_asset_reimport", editor::assets::reimport);
+        handlers.insert("gd_import_settings", editor::assets::import_settings);
         handlers.insert("gd_file_move", editor::files::move_file);
         handlers.insert("gd_file_delete", editor::files::delete);
         handlers.insert("gd_export_project", editor::import_export::export_project);
@@ -271,6 +272,18 @@ mod tests {
         for tool in ["gd_export_presets", "gd_editor_quit"] {
             assert!(names.contains(&tool), "{tool} must be registered on the editor bridge");
         }
+    }
+
+    #[test]
+    fn editor_registry_includes_the_import_settings_tool() {
+        assert!(HandlerRegistry::editor().tool_names().contains(&"gd_import_settings"));
+    }
+
+    #[test]
+    fn import_settings_stays_off_the_game_bridge() {
+        // `.import` sidecars are an editor-filesystem concern; a running game
+        // reads the already-imported artifact and has no pipeline to drive.
+        assert!(!HandlerRegistry::game().tool_names().contains(&"gd_import_settings"));
     }
 
     #[test]

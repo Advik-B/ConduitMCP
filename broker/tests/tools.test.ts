@@ -80,6 +80,7 @@ const EXPECTED_TOOLS = [
   "gd_get_events",
   "gd_get_logs",
   "gd_http_request",
+  "gd_import_settings",
   "gd_input",
   "gd_input_map",
   "gd_multiplayer",

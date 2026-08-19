@@ -296,12 +296,18 @@ because they are not judgment calls: the design says they exist and they do not.
 
 | Section 8 text | Status |
 |---|---|
-| "Read and set import settings through the import plugin surface" | **Absent.** \`gd_asset_add\` and \`gd_asset_reimport\` ingest and re-run the import, but no tool reads or writes \`.import\` options. |
 | "enable or disable editor plugins" | **Absent.** No tool; \`gd_project_set_setting\` can write \`editor_plugins/enabled\` blind. |
 | "create and read shaders and themes" | **Absent.** \`gd_resource_create\` can make the resource; nothing compiles a shader or returns diagnostics, and no theme tool exists. |
 | "Shader creation gets the same log-derived compile diagnostics" | **Absent.** \`gd_script_validate\` is script-only. |
 | "and manage translations" | **Absent.** No translation tool; the CSV/PO pipeline is editor-menu driven. |
 | "process-mode control" (section 8, observation and debugging) | **Absent** as a dedicated tool; reachable as a node property. |
+
+"Read and set import settings" left this table in phase 13. \`gd_import_settings\`
+ships it, though not literally "through the import plugin surface": it reads and
+writes the \`.import\` sidecar through \`ConfigFile\`, because a \`ResourceImporter\`
+is one of the objects nothing can name (\`docs/api-gaps.md\`). The difference is
+visible only in that an importer cannot be asked for options an asset does not
+already carry.
 
 ## Ranked gap clusters, tutorials
 
@@ -337,12 +343,18 @@ a lie.
 \`gd_resource_call\`. *Accepted* by the same runner: a \`Curve\` property list, an
 \`add_point\` that persists, and a property read with no preceding write.
 
-### Next
+**Phase 13: import settings.** \`gd_import_settings\`, reading and writing the
+\`[params]\` of an asset's \`.import\` sidecar through \`ConfigFile\` and
+reimporting afterwards. *Accepted* by \`bun run phase13\`, also with
+\`--disable-eval\`: it ingests a texture, flips \`compress/mode\`, and asserts the
+artifact under \`.godot/imported/\` changed. Not undo-wrapped -- an \`.import\`
+write is a file write, not edited-scene state -- so the response reports
+\`undoable: false\`. An option the asset does not already carry is an error
+rather than a silent insert, which is sound because the importer writes its full
+default set on first import; the runner asserts that property rather than
+assuming it (\`docs/api-gaps.md\`).
 
-**Phase 13: import settings.** The section 8 capability that is specified and
-missing, and the largest single tutorial gap cluster. Read and write \`.import\`
-options, then reimport. *Acceptance:* change a texture's compression mode and
-observe the reimported resource change, eval-free.
+### Next
 
 **Phase 14: authoring surfaces.** TileSet sources and terrains, theme resources,
 animation track types beyond value tracks, shader create-and-validate, and

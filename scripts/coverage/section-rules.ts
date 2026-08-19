@@ -401,6 +401,46 @@ const T0_RULES: SectionRule[] = [
     via: "gd_pause / gd_step_frames / gd_set_time_scale",
     match: ["pause (f9)", "frame advance", "game speed", "quitting", "handling quit requests", "quit notification"],
   },
+  {
+    // Split out of the old t2:import_options on one line: a heading is T0 here
+    // only when the action it names is a single [params] key/value in an
+    // .import sidecar, which is exactly what gd_import_settings reads and
+    // writes. Headings that need a sub-resource written or a plugin authored
+    // stay behind in t2:import_authoring.
+    id: "t0:import_options",
+    kind: "action",
+    tier: "T0",
+    via: "gd_import_settings (get/set on the .import sidecar's [params])",
+    match: [
+      "import dock",
+      "import option",
+      "import parameter",
+      "advanced import settings",
+      "import configuration",
+      "import workflow",
+      "changing import",
+      "changing default import",
+      "import hint",
+      "import script",
+      "importing 3d scenes",
+      "importing images",
+      "importing audio",
+      "importing translations",
+      "retargeting",
+      "bone renamer",
+      "rename bones",
+      "unmapped bones",
+      "unimportant positions",
+      "bone transform",
+      "normalize position tracks",
+      "roughness limiter on import",
+      "node type customization",
+      "filter script",
+      "optimizer",
+      "assets pipeline",
+      "on image import",
+    ],
+  },
 ];
 
 /** Nothing in the surface reaches it. */
@@ -497,44 +537,23 @@ const T3_RULES: SectionRule[] = [
 /** No semantic tool; only arbitrary evaluation reaches it. */
 const T2_RULES: SectionRule[] = [
   {
-    id: "t2:import_options",
+    // The residue of the old t2:import_options, after t0:import_options took
+    // the headings that are a single [params] value. What is left needs
+    // something gd_import_settings cannot do: author an EditorImportPlugin, or
+    // drive the Advanced Import Settings dialog into writing a sub-resource
+    // (an extracted material, a saved animation library, a sliced atlas) that
+    // no single option name addresses.
+    id: "t2:import_authoring",
     kind: "action",
     tier: "T2",
-    via: "no tool reads or writes .import options, though whitepaper section 8 specifies one; gd_editor_eval only",
+    via: "gd_import_settings reads and writes .import options, but these need an import plugin or a dialog-authored sub-resource; gd_editor_eval only",
     match: [
-      "import dock",
-      "import option",
-      "import parameter",
-      "advanced import settings",
-      "import configuration",
-      "import workflow",
-      "changing import",
-      "changing default import",
-      "import hint",
-      "import script",
       "import plugin",
-      "importing 3d scenes",
-      "importing images",
-      "importing audio",
-      "importing translations",
-      "retargeting",
-      "bone renamer",
-      "rename bones",
-      "unmapped bones",
-      "unimportant positions",
-      "bone transform",
-      "normalize position tracks",
-      "roughness limiter on import",
-      "node type customization",
       "scene inheritance",
       "animation libraries",
-      "filter script",
       "slices",
-      "optimizer",
       "extracting materials",
       "save to file",
-      "assets pipeline",
-      "on image import",
     ],
   },
   {
@@ -871,10 +890,10 @@ const T1_RULES: SectionRule[] = [
  */
 const RESIDUE_RULES: SectionRule[] = [
   {
-    id: "t2:import_option_names",
+    id: "t0:import_option_names",
     kind: "action",
-    tier: "T2",
-    via: "individual .import option, which no tool reads or writes",
+    tier: "T0",
+    via: "gd_import_settings; the residue on these pages is individual .import options",
     pages: ["tutorials/assets_pipeline"],
     match: [""],
   },

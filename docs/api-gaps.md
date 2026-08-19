@@ -979,13 +979,39 @@ the same class of act as installing the addon, and `CLAUDE.md` forbids weakening
 defaults for convenience. `--audit-log <path>` enables it, `off` disables it
 explicitly for configs that can set a variable but not unset one.
 
-### gd_asset_add's import check is timing-flaky
+### gd_asset_add does not import what it writes; scan_sources does
 
 `asset_add_imports` in the phase 3 runner asserts that Godot has produced a
-`.import` sidecar by the time `gd_asset_add` returns. It fails intermittently and
-passes on a re-run: the editor's filesystem rescan is asynchronous and the tool's
-wait does not always cover it. Unrelated to the tool's own correctness, but worth
-knowing before treating a red phase 3 as a regression.
+`.import` sidecar by the time `gd_asset_add` returns, and it fails
+intermittently. The cause was measured during phase 13 rather than guessed at:
+`gd_asset_add` calls `EditorFileSystem::scan()`, which *discovers* a newly
+written source file but does not import it. Only `scan_sources()` does, which is
+what `gd_asset_reimport` calls. In a live headless editor the sidecar never
+appeared after eight seconds of polling following `gd_asset_add` alone, and
+appeared within two seconds of a following `gd_asset_reimport`, repeatedly. The
+intermittent green presumably comes from the editor's own periodic source scan
+arriving in time.
+
+Chaining `gd_asset_reimport` after `gd_asset_add` makes ingestion deterministic,
+which is what `tests/evals/phase13_import.ts` does. Making `gd_asset_add` do
+that itself needs a two-stage pending op (scan, then scan_sources), which is a
+change to a phase 3 tool and its acceptance, so it is recorded here rather than
+folded into an unrelated phase.
+
+### The import pipeline rewrites the .import sidecar it just consumed
+
+Godot rewrites an asset's `.import` file as the last step of importing it. A
+`[params]` write issued while an import is still finishing is therefore
+silently reverted: `gd_import_settings` reports the previous value and the new
+one truthfully, and the pipeline then overwrites the file with the values it
+started from. This is not a bridge bug and no locking is available to prevent
+it. The phase 13 runner reads through a `settled()` helper that requires the
+options, the artifact named in `[remap]`, and that artifact's bytes to be
+unchanged across two reads before it trusts a reading or issues a write.
+
+Note also that `EditorFileSystem::is_scanning()` goes false before a queued
+reimport has run, so waiting on a rescan is not the same as waiting on an
+import. Anything that needs the imported artifact must poll for the artifact.
 
 ## Engine installation and the Godot release archives
 
@@ -1094,6 +1120,19 @@ some are handed out by other calls, some are constructed. Reaching them needs a
 handle table with a lifetime, which is a different and larger design than a
 resolver, and is why `gd_physics` wraps space-state queries as dedicated ops
 instead of exposing the object. Tracked as phase 16 in the coverage matrix.
+
+`ResourceImporter` and its subclasses (`ResourceImporterTexture`,
+`ResourceImporterScene`) are in that set, so `gd_import_settings` cannot ask an
+importer which options it supports; it reads the ones an asset already has out
+of the `[params]` section of its `.import` sidecar. Measured against Godot
+4.7.1, that is the same list: a freshly imported 64x64 PNG carries all 23
+texture-importer options, and the set was unchanged after a `compress/mode`
+write and reimport, which `option_set_is_stable_across_a_write` in the phase 13
+runner asserts on every run. That is what makes it safe for the tool to reject
+an option name the asset does not already carry rather than inserting it: a key
+that is absent is a typo, not a defaulted option. If a future importer writes
+its options conditionally, that check goes red and the rejection has to relax to
+"absent after a reimport" instead.
 
 ### Acceptance runs with --disable-eval
 

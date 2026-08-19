@@ -142,6 +142,7 @@ export const TOOL_GROUP_BY_NAME: Record<string, ToolGroup> = {
 
   gd_asset_add: "assets",
   gd_asset_reimport: "assets",
+  gd_import_settings: "assets",
 
   gd_file_move: "files",
   gd_file_delete: "files",
