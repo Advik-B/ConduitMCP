@@ -317,16 +317,20 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
 
   gameTool(
     "gd_node_get_info",
-    "Report a node's class, children, and property, signal, and method names.",
-    { node_path: z.string().describe("Absolute path to the node, for example /root/Main/Player.") },
+    "Report a target's class and its property, signal, and method names. Nodes also report children and tree path; a singleton has neither.",
+    {
+      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:OS.").optional(),
+      node_path: z.string().describe("Absolute path to the node. Legacy alias for target; pass one or the other, not both.").optional(),
+    },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   );
 
   gameTool(
     "gd_node_get_property",
-    "Read one property of a live node, returned as tagged JSON.",
+    "Read one property of a live node or an engine singleton, returned as tagged JSON.",
     {
-      node_path: z.string().describe("Absolute path to the node."),
+      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:OS or singleton:RenderingServer.").optional(),
+      node_path: z.string().describe("Absolute path to the node. Legacy alias for target; pass one or the other, not both.").optional(),
       property: z.string().describe("Property name, for example position."),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -334,9 +338,10 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
 
   gameTool(
     "gd_node_set_property",
-    "Set one property of a live node and return its previous value. Values may be plain JSON or tagged Godot types ({\"__type\":\"Vector2\",\"x\":..,\"y\":..}).",
+    "Set one property of a live node or an engine singleton and return its previous value. Values may be plain JSON or tagged Godot types ({\"__type\":\"Vector2\",\"x\":..,\"y\":..}).",
     {
-      node_path: z.string().describe("Absolute path to the node."),
+      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:OS or singleton:RenderingServer.").optional(),
+      node_path: z.string().describe("Absolute path to the node. Legacy alias for target; pass one or the other, not both.").optional(),
       property: z.string().describe("Property name to write."),
       value: z.any().describe("New value; plain JSON or a tagged Godot type."),
     },
@@ -345,9 +350,10 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
 
   gameTool(
     "gd_node_call",
-    "Call a method on a live node with converted arguments and return its result.",
+    "Call a method on a live node or an engine singleton with converted arguments, and return its result. 'singleton:<Class>' reaches OS, Time, Input, RenderingServer, PhysicsServer3D, and every other engine singleton without eval.",
     {
-      node_path: z.string().describe("Absolute path to the node."),
+      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:OS or singleton:RenderingServer.").optional(),
+      node_path: z.string().describe("Absolute path to the node. Legacy alias for target; pass one or the other, not both.").optional(),
       method: z.string().describe("Method name to call."),
       args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types.").optional(),
     },

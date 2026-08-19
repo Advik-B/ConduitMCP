@@ -9,9 +9,10 @@ use serde_json::{json, Value};
 
 use crate::dispatcher::{FrameContext, HandlerOutcome};
 use crate::handlers::runtime::support::{
-    apply_properties, optional_bool, optional_properties, optional_str, property_exists,
-    require_str, resolve_node, scene_root, scene_tree,
+    apply_properties, object_property_exists, optional_bool, optional_properties, optional_str,
+    require_str, resolve_node, resolve_target, scene_root, scene_tree,
 };
+use crate::handlers::target::{target_response, target_spec};
 use crate::protocol::BridgeError;
 use crate::variant_json::{
     json_to_variant, json_to_variant_typed, validate_resource_path, variant_to_json,
@@ -21,17 +22,18 @@ use crate::variant_json::{
 /// returning the previous value so the write is reversible by the agent.
 pub fn set_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     HandlerOutcome::Done((|| {
-        let node_path = require_str(args, "node_path")?;
+        let spec = target_spec(args)?;
         let property = require_str(args, "property")?;
         let value = args
             .get("value")
             .ok_or_else(|| BridgeError::InvalidArgs("'value' is required".into()))?;
 
-        let mut node = resolve_node(&node_path)?;
-        let previous = node.get(property.as_str());
-        if previous.is_nil() && !property_exists(&node, &property) {
+        let mut object = resolve_target(&spec)?;
+        let previous = object.get(property.as_str());
+        if previous.is_nil() && !object_property_exists(&object, &property) {
             return Err(BridgeError::InvalidProperty(format!(
-                "node {node_path} has no property '{property}'"
+                "{} has no property '{property}'",
+                spec.label()
             )));
         }
 
@@ -42,24 +44,24 @@ pub fn set_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
             json_to_variant_typed(value, expected)?
         };
 
-        node.set(property.as_str(), &variant);
-        Ok(json!({
-            "node_path": node_path,
-            "property": property,
-            "previous": variant_to_json(&previous),
-        }))
+        object.set(property.as_str(), &variant);
+        Ok(target_response(
+            &spec,
+            json!({ "property": property, "previous": variant_to_json(&previous) }),
+        ))
     })())
 }
 
 /// Call a method with converted arguments and return its result.
 pub fn call_method(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     HandlerOutcome::Done((|| {
-        let node_path = require_str(args, "node_path")?;
+        let spec = target_spec(args)?;
         let method = require_str(args, "method")?;
-        let mut node = resolve_node(&node_path)?;
-        if !node.has_method(method.as_str()) {
+        let mut object = resolve_target(&spec)?;
+        if !object.has_method(method.as_str()) {
             return Err(BridgeError::CallFailed(format!(
-                "node {node_path} has no method '{method}'"
+                "{} has no method '{method}'",
+                spec.label()
             )));
         }
 
@@ -72,12 +74,11 @@ pub fn call_method(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
             Some(_) => return Err(BridgeError::InvalidArgs("'args' must be an array".into())),
         };
 
-        let result = node.call(method.as_str(), &call_args);
-        Ok(json!({
-            "node_path": node_path,
-            "method": method,
-            "result": variant_to_json(&result),
-        }))
+        let result = object.call(method.as_str(), &call_args);
+        Ok(target_response(
+            &spec,
+            json!({ "method": method, "result": variant_to_json(&result) }),
+        ))
     })())
 }
 

@@ -10,6 +10,7 @@ use godot::classes::{Engine, Node, SceneTree, Window};
 use godot::prelude::*;
 use serde_json::{Map, Value};
 
+use crate::handlers::target::{resolve_singleton, TargetSpec};
 use crate::protocol::BridgeError;
 use crate::variant_json::{json_to_variant, json_to_variant_typed};
 
@@ -36,6 +37,16 @@ pub fn resolve_node(path: &str) -> Result<Gd<Node>, BridgeError> {
     match root.get_node_or_null(path) {
         Some(node) => Ok(node),
         None => Err(BridgeError::NodeNotFound(nearest_ancestor_message(&root, path))),
+    }
+}
+
+/// Resolve a target on the game bridge: a node by absolute scene path, or an
+/// engine singleton. The singleton arm is what makes `RenderingServer`, `OS`,
+/// `Time`, and every other server addressable without `gd_game_eval`.
+pub fn resolve_target(spec: &TargetSpec) -> Result<Gd<Object>, BridgeError> {
+    match spec {
+        TargetSpec::Node(path) => Ok(resolve_node(path)?.upcast()),
+        TargetSpec::Singleton(name) => resolve_singleton(name),
     }
 }
 
@@ -93,10 +104,37 @@ pub fn optional_properties(args: &Value) -> Result<Option<&Map<String, Value>>, 
     }
 }
 
-fn object_property_exists(object: &Gd<Object>, name: &str) -> bool {
+pub fn object_property_exists(object: &Gd<Object>, name: &str) -> bool {
     object.get_property_list().iter_shared().any(|entry| {
         entry.get(&GString::from("name")).map(|value| value.to_string()).as_deref() == Some(name)
     })
+}
+
+fn names_from(list: Array<VarDictionary>) -> Vec<String> {
+    let mut names = Vec::new();
+    for entry in list.iter_shared() {
+        let name = entry.get(&GString::from("name")).map(|value| value.to_string()).unwrap_or_default();
+        if !name.is_empty() {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// The declared property names of any engine object, in `get_property_list`
+/// order. Object-scoped rather than Node-scoped so a singleton answers too.
+pub fn object_property_names(object: &Gd<Object>) -> Vec<String> {
+    names_from(object.get_property_list())
+}
+
+/// The method names any engine object responds to.
+pub fn object_method_names(object: &Gd<Object>) -> Vec<String> {
+    names_from(object.get_method_list())
+}
+
+/// The signal names any engine object declares.
+pub fn object_signal_names(object: &Gd<Object>) -> Vec<String> {
+    names_from(object.get_signal_list())
 }
 
 /// A readable name for a Variant type, for example `VECTOR2` or `INT`.
@@ -106,41 +144,20 @@ pub fn variant_type_name(variant: &Variant) -> String {
 
 /// The declared property names of a node, in `get_property_list` order.
 pub fn property_names(node: &Gd<Node>) -> Vec<String> {
-    let mut names = Vec::new();
-    for entry in node.get_property_list().iter_shared() {
-        let name = entry.get(&GString::from("name")).map(|value| value.to_string()).unwrap_or_default();
-        if !name.is_empty() {
-            names.push(name);
-        }
-    }
-    names
+    object_property_names(&node.clone().upcast())
 }
 
 pub fn property_exists(node: &Gd<Node>, name: &str) -> bool {
-    property_names(node).iter().any(|candidate| candidate == name)
+    object_property_exists(&node.clone().upcast(), name)
 }
 
 /// The method names a node responds to.
 pub fn method_names(node: &Gd<Node>) -> Vec<String> {
-    let mut names = Vec::new();
-    for entry in node.get_method_list().iter_shared() {
-        let name = entry.get(&GString::from("name")).map(|value| value.to_string()).unwrap_or_default();
-        if !name.is_empty() {
-            names.push(name);
-        }
-    }
-    names
+    object_method_names(&node.clone().upcast())
 }
 
 /// The signal names a node declares.
 pub fn signal_names(node: &Gd<Node>) -> Vec<String> {
-    let mut names = Vec::new();
-    for entry in node.get_signal_list().iter_shared() {
-        let name = entry.get(&GString::from("name")).map(|value| value.to_string()).unwrap_or_default();
-        if !name.is_empty() {
-            names.push(name);
-        }
-    }
-    names
+    object_signal_names(&node.clone().upcast())
 }
 

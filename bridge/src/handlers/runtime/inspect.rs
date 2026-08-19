@@ -6,9 +6,11 @@ use serde_json::{json, Value};
 
 use crate::dispatcher::{FrameContext, HandlerOutcome};
 use crate::handlers::runtime::support::{
-    method_names, optional_str, optional_u64, property_exists, property_names, require_str,
-    resolve_node, scene_tree, signal_names, variant_type_name,
+    object_method_names, object_property_exists, object_property_names, object_signal_names,
+    optional_str, optional_u64, require_str, resolve_node, resolve_target, scene_tree,
+    variant_type_name,
 };
+use crate::handlers::target::{target_response, target_spec, TargetSpec};
 use crate::protocol::BridgeError;
 use crate::variant_json::variant_to_json;
 
@@ -17,46 +19,57 @@ const DEFAULT_TREE_DEPTH: u64 = 3;
 /// Read a single property, converting the Variant to tagged JSON.
 pub fn get_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     HandlerOutcome::Done((|| {
-        let node_path = require_str(args, "node_path")?;
+        let spec = target_spec(args)?;
         let property = require_str(args, "property")?;
-        let node = resolve_node(&node_path)?;
-        let value = node.get(property.as_str());
-        if value.is_nil() && !property_exists(&node, &property) {
+        let object = resolve_target(&spec)?;
+        let value = object.get(property.as_str());
+        if value.is_nil() && !object_property_exists(&object, &property) {
             return Err(BridgeError::InvalidProperty(format!(
-                "node {node_path} has no property '{property}'"
+                "{} has no property '{property}'",
+                spec.label()
             )));
         }
-        Ok(json!({
-            "node_path": node_path,
-            "property": property,
-            "type": variant_type_name(&value),
-            "value": variant_to_json(&value),
-        }))
+        Ok(target_response(
+            &spec,
+            json!({
+                "property": property,
+                "type": variant_type_name(&value),
+                "value": variant_to_json(&value),
+            }),
+        ))
     })())
 }
 
 /// Report a node's class, children, property names, signals, and methods.
 pub fn get_info(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     HandlerOutcome::Done((|| {
-        let node_path = require_str(args, "node_path")?;
-        let node = resolve_node(&node_path)?;
+        let spec = target_spec(args)?;
+        let object = resolve_target(&spec)?;
 
-        let children: Vec<Value> = node
-            .get_children()
-            .iter_shared()
-            .map(|child| node_summary(&child))
-            .collect();
+        let mut fields = json!({
+            "class": object.get_class().to_string(),
+            "properties": object_property_names(&object),
+            "signals": object_signal_names(&object),
+            "methods": object_method_names(&object),
+        });
 
-        Ok(json!({
-            "name": node.get_name().to_string(),
-            "class": node.get_class().to_string(),
-            "path": node.get_path().to_string(),
-            "child_count": node.get_child_count(),
-            "children": children,
-            "properties": property_names(&node),
-            "signals": signal_names(&node),
-            "methods": method_names(&node),
-        }))
+        // Children and a tree path only mean something for a node; a singleton
+        // has neither, and inventing empty ones would read as "it has no
+        // children" rather than "the question does not apply".
+        if let TargetSpec::Node(path) = &spec {
+            let node = resolve_node(path)?;
+            let children: Vec<Value> = node
+                .get_children()
+                .iter_shared()
+                .map(|child| node_summary(&child))
+                .collect();
+            fields["name"] = json!(node.get_name().to_string());
+            fields["path"] = json!(node.get_path().to_string());
+            fields["child_count"] = json!(node.get_child_count());
+            fields["children"] = Value::Array(children);
+        }
+
+        Ok(target_response(&spec, fields))
     })())
 }
 

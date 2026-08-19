@@ -9,6 +9,7 @@ use godot::prelude::*;
 use serde_json::Value;
 
 use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
+use crate::handlers::target::{resolve_singleton, TargetSpec};
 use crate::protocol::BridgeError;
 
 /// Frames to wait for `EditorFileSystem` to finish scanning before giving up.
@@ -45,6 +46,18 @@ pub(crate) fn resolve_editor_node(path: &str) -> Result<Gd<Node>, BridgeError> {
     match root.get_node_or_null(path) {
         Some(node) => Ok(node),
         None => Err(BridgeError::NodeNotFound(nearest_ancestor_message(&root, path))),
+    }
+}
+
+/// Resolve a target on the editor bridge: a node in the *edited scene*, or an
+/// engine singleton. The singleton arm reaches `EditorInterface`,
+/// `ProjectSettings`, `EditorFileSystem`, and the servers without
+/// `gd_editor_eval`, which matters more here than on the game bridge because
+/// editor eval is off unless explicitly enabled.
+pub(crate) fn resolve_editor_target(spec: &TargetSpec) -> Result<Gd<Object>, BridgeError> {
+    match spec {
+        TargetSpec::Node(path) => Ok(resolve_editor_node(path)?.upcast()),
+        TargetSpec::Singleton(name) => resolve_singleton(name),
     }
 }
 

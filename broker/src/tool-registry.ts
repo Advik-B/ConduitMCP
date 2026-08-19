@@ -110,6 +110,7 @@ export const TOOL_GROUP_BY_NAME: Record<string, ToolGroup> = {
   gd_scene_instantiate: "scene",
   gd_scene_node_get_property: "scene",
   gd_scene_node_set_property: "scene",
+  gd_scene_node_call: "scene",
   gd_scene_find_nodes: "scene",
   gd_node_add: "scene",
   gd_node_remove: "scene",
@@ -127,6 +128,8 @@ export const TOOL_GROUP_BY_NAME: Record<string, ToolGroup> = {
 
   gd_resource_create: "resource",
   gd_resource_set_property: "resource",
+  gd_resource_get_property: "resource",
+  gd_resource_call: "resource",
 
   gd_project_get_setting: "project",
   gd_project_set_setting: "project",

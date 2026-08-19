@@ -19,6 +19,7 @@ pub mod classdb;
 pub mod editor;
 pub mod node_query;
 pub mod runtime;
+pub mod target;
 
 type HandlerFn = fn(&Value, &FrameContext) -> HandlerOutcome;
 
@@ -57,6 +58,7 @@ impl HandlerRegistry {
         handlers.insert("gd_node_duplicate", editor::scene::node_duplicate);
         handlers.insert("gd_scene_node_get_property", editor::properties::get_property);
         handlers.insert("gd_scene_node_set_property", editor::properties::set_property);
+        handlers.insert("gd_scene_node_call", editor::properties::call_method);
         handlers.insert("gd_scene_instantiate", editor::scene::scene_instantiate);
         handlers.insert("gd_scene_signal", editor::wiring::scene_signal);
         handlers.insert("gd_node_group", editor::wiring::node_group);
@@ -70,6 +72,8 @@ impl HandlerRegistry {
         handlers.insert("gd_script_validate", editor::script::validate);
         handlers.insert("gd_resource_create", editor::resource::create);
         handlers.insert("gd_resource_set_property", editor::resource::set_property);
+        handlers.insert("gd_resource_get_property", editor::resource::get_property);
+        handlers.insert("gd_resource_call", editor::resource::call_method);
         handlers.insert("gd_project_get_setting", editor::project::get_setting);
         handlers.insert("gd_project_set_setting", editor::project::set_setting);
         handlers.insert("gd_undo", editor::editor_state::undo);

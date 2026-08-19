@@ -11,7 +11,7 @@
     "pack:npm": "bun scripts/pack-npm.ts",
     "coverage": "bun scripts/coverage/report.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p broker",
-    "ci:phases": "bun run handshake && bun run stress && bun run phase3 && bun run phase4 && bun run phase7 && bun run phase8 && bun run phase9 && bun run addon && bun run engine",
+    "ci:phases": "bun run handshake && bun run stress && bun run phase3 && bun run phase4 && bun run phase7 && bun run phase8 && bun run phase9 && bun run phase10 && bun run addon && bun run engine",
     "handshake": "bun tests/evals/startup_handshake.ts",
     "addon": "bun tests/evals/addon_install.ts",
     "engine": "bun tests/evals/engine_install.ts",
@@ -23,7 +23,8 @@
     "phase6": "bun tests/evals/phase6_pixel.ts",
     "phase7": "bun tests/evals/phase7_parity.ts",
     "phase8": "bun tests/evals/phase8_runtime_parity.ts",
-    "phase9": "bun tests/evals/phase9_project_tools.ts"
+    "phase9": "bun tests/evals/phase9_project_tools.ts",
+    "phase10": "bun tests/evals/phase10_targeting.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

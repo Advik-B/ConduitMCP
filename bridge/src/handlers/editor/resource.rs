@@ -136,6 +136,117 @@ pub fn set_property(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
     trigger_rescan(false, ctx, move || Ok(json!({ "path": path, "property": property, "previous": previous_json })))
 }
 
+/// Read one property of a resource, or list the properties it has.
+///
+/// The counterpart `gd_resource_set_property` has always existed, so before
+/// this a resource could be written but never read: an agent could set a value
+/// and see the previous one come back, and had no way to inspect a `.tres` it
+/// had not just written. `op: list` answers the other half, since a resource's
+/// property set is not knowable from its class name alone once a script or a
+/// sub-resource is involved.
+pub fn get_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
+    HandlerOutcome::Done((|| {
+        let path = require_str(args, "path")?;
+        validate_project_path(&path)?;
+
+        // Listing is a separate op rather than "property omitted means list" so
+        // a typo in the property name cannot silently become a listing. The op
+        // and its arguments are settled before the resource is loaded, matching
+        // this module's rule that a malformed call costs no engine work.
+        let op = args.get("op").and_then(Value::as_str).unwrap_or("get");
+        let property = match op {
+            "list" => None,
+            "get" => Some(require_str(args, "property")?),
+            other => {
+                return Err(BridgeError::InvalidArgs(format!("unknown op '{other}'; expected get or list")))
+            }
+        };
+
+        let resource = load_resource(&path)?;
+        match property {
+            None => Ok(json!({
+                "path": path,
+                "class_name": resource.get_class().to_string(),
+                "properties": resource_property_names(&resource),
+            })),
+            Some(property) => {
+                let value = resource.get(property.as_str());
+                if value.is_nil() && !resource_property_exists(&resource, &property) {
+                    return Err(BridgeError::InvalidProperty(format!(
+                        "resource at '{path}' has no property '{property}'"
+                    )));
+                }
+                Ok(json!({ "path": path, "property": property, "value": variant_to_json(&value) }))
+            }
+        }
+    })())
+}
+
+/// Call a method on a resource, optionally re-saving it afterwards.
+///
+/// Whether a call mutates is not knowable from the method name, so `save` is an
+/// explicit argument rather than a guess. It defaults to true because the
+/// motivating cases are mutations (`Curve::add_point`, `Gradient::add_point`,
+/// `MeshLibrary::create_item`); a pure query passes `save: false` and skips both
+/// the write and the rescan.
+///
+/// Not undo-wrapped, for the reason this module's header already gives.
+pub fn call_method(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
+    let prepared: Result<(String, String, Value, bool), BridgeError> = (|| {
+        let path = require_str(args, "path")?;
+        validate_project_path(&path)?;
+        let method = require_str(args, "method")?;
+        let save = args.get("save").and_then(Value::as_bool).unwrap_or(true);
+
+        let mut resource = load_resource(&path)?;
+        if !resource.has_method(method.as_str()) {
+            return Err(BridgeError::CallFailed(format!(
+                "resource at '{path}' has no method '{method}'"
+            )));
+        }
+
+        let call_args = match args.get("args") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(json_to_variant)
+                .collect::<Result<Vec<Variant>, BridgeError>>()?,
+            Some(_) => return Err(BridgeError::InvalidArgs("'args' must be an array".into())),
+        };
+
+        let result = resource.call(method.as_str(), &call_args);
+        if save {
+            let save_err = ResourceSaver::singleton().save(&resource);
+            if save_err != GdError::OK {
+                return Err(BridgeError::ResourceError(format!(
+                    "failed to save resource to '{path}': {save_err:?}"
+                )));
+            }
+        }
+        Ok((path, method, variant_to_json(&result), save))
+    })();
+
+    let (path, method, result, save) = match prepared {
+        Ok(v) => v,
+        Err(e) => return HandlerOutcome::Done(Err(e)),
+    };
+
+    // A pure query changed no file, so there is nothing for the editor to
+    // rescan and no reason to make the caller wait for one.
+    if !save {
+        return HandlerOutcome::Done(Ok(json!({ "path": path, "method": method, "result": result, "saved": false })));
+    }
+    trigger_rescan(false, ctx, move || {
+        Ok(json!({ "path": path, "method": method, "result": result, "saved": true }))
+    })
+}
+
+fn load_resource(path: &str) -> Result<Gd<Resource>, BridgeError> {
+    ResourceLoader::singleton()
+        .load(path)
+        .ok_or_else(|| BridgeError::ResourceError(format!("could not load resource at '{path}'")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +268,20 @@ mod tests {
         assert_invalid_args(create(&json!({}), &ctx()));
         assert_invalid_args(create(&json!({ "class_name": "Resource" }), &ctx()));
         assert_invalid_args(create(&json!({ "class_name": "Resource", "path": "/tmp/evil.tres" }), &ctx()));
+    }
+
+    #[test]
+    fn get_property_validates_before_touching_the_engine() {
+        assert_invalid_args(get_property(&json!({}), &ctx()));
+        assert_invalid_args(get_property(&json!({ "path": "/tmp/evil.tres", "property": "x" }), &ctx()));
+        assert_invalid_args(get_property(&json!({ "path": "res://x.tres", "op": "nope" }), &ctx()));
+    }
+
+    #[test]
+    fn call_method_requires_a_path_and_a_method() {
+        assert_invalid_args(call_method(&json!({}), &ctx()));
+        assert_invalid_args(call_method(&json!({ "path": "res://x.tres" }), &ctx()));
+        assert_invalid_args(call_method(&json!({ "path": "/tmp/evil.tres", "method": "add_point" }), &ctx()));
     }
 
     #[test]

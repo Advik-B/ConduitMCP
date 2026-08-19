@@ -23,6 +23,31 @@ export function registerEditorResourceTools(server: McpServer, manager: BridgeMa
   );
 
   editorTool(
+    "gd_resource_get_property",
+    "Read one property of a resource file (op: get), or list the property names it has (op: list). The counterpart of gd_resource_set_property, which could previously only be written blind.",
+    {
+      path: z.string().describe("res:// path to the resource."),
+      op: z.enum(["get", "list"]).describe("get reads one property; list enumerates the property names (default get).").optional(),
+      property: z.string().describe("Property name to read (op get).").optional(),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    "await",
+  );
+
+  editorTool(
+    "gd_resource_call",
+    "Call a method on a resource file and return its result, re-saving the resource afterwards unless save is false. This is what reaches Curve.add_point, Gradient.add_point, MeshLibrary.create_item, and the rest of the Resource method surface. Not undo-wrapped, matching gd_resource_set_property.",
+    {
+      path: z.string().describe("res:// path to the resource."),
+      method: z.string().describe("Method name to call."),
+      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types.").optional(),
+      save: z.boolean().describe("Re-save the resource after the call (default true). Pass false for a pure query to skip the write and the filesystem rescan.").optional(),
+    },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    "await",
+  );
+
+  editorTool(
     "gd_resource_set_property",
     "Set one property of a resource file and re-save it, returning the previous value. Values may be plain JSON or tagged Godot types.",
     {

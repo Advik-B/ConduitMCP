@@ -83,9 +83,10 @@ export function registerEditorSceneTools(server: McpServer, manager: BridgeManag
 
   editorTool(
     "gd_scene_node_get_property",
-    "Read one property of a node in the edited scene, returned as plain JSON or a tagged Godot type. The edit-time counterpart of gd_node_get_property.",
+    "Read one property of a node in the edited scene or of an engine singleton, returned as plain JSON or a tagged Godot type. The edit-time counterpart of gd_node_get_property.",
     {
-      node_path: z.string().describe("Path to the node, relative to the edited scene root ('.' for the root itself)."),
+      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings.").optional(),
+      node_path: z.string().describe("Path relative to the edited scene root. Legacy alias for target; pass one or the other, not both.").optional(),
       property: z.string().describe("Property name to read."),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -93,11 +94,24 @@ export function registerEditorSceneTools(server: McpServer, manager: BridgeManag
 
   editorTool(
     "gd_scene_node_set_property",
-    "Set one property of a node in the edited scene, undo-wrapped, returning the previous value. Values may be plain JSON or tagged Godot types, including {__type: 'Resource', path: 'res://...'} for resource-valued properties like textures and shapes.",
+    "Set one property of a node in the edited scene, undo-wrapped, returning the previous value. Values may be plain JSON or tagged Godot types, including {__type: 'Resource', path: 'res://...'} for resource-valued properties like textures and shapes. A singleton target is written directly and reports undoable: false, because engine-global state does not belong on the scene's undo history.",
     {
-      node_path: z.string().describe("Path to the node, relative to the edited scene root ('.' for the root itself)."),
+      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings.").optional(),
+      node_path: z.string().describe("Path relative to the edited scene root. Legacy alias for target; pass one or the other, not both.").optional(),
       property: z.string().describe("Property name to write."),
       value: z.any().describe("New value; plain JSON or a tagged Godot type."),
+    },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  );
+
+  editorTool(
+    "gd_scene_node_call",
+    "Call a method on an edited-scene node or an engine singleton and return its result. The edit-time counterpart of gd_node_call, reaching TileMapLayer.set_cell and NavigationRegion3D.bake_navigation_mesh. NOT undo-wrapped: a method call has no inverse, so gd_undo cannot revert it. Follow a mutating call with gd_scene_save.",
+    {
+      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings.").optional(),
+      node_path: z.string().describe("Path relative to the edited scene root. Legacy alias for target; pass one or the other, not both.").optional(),
+      method: z.string().describe("Method name to call."),
+      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types.").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   );

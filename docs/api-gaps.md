@@ -1029,3 +1029,74 @@ broker writes itself are not quarantined, while an archive handed to `ditto` or
 Checksums are SHA-512 under `SHA512-SUMS.txt`, not the addon's SHA-256 under
 `SHA256SUMS.txt`, and entries there are sometimes path-prefixed, so the digest
 lookup compares basenames. An exact compare reports a good release as unlisted.
+
+## Phase 10: the target grammar, and what it cannot reach
+
+`docs/coverage-matrix.md` measured the shipped surface against the Godot 4.7
+documentation and found 54.3% of the documented engine API reachable only
+through eval. Almost all of it traced to one thing: `gd_node_call` and its
+siblings took `node_path`, and `resolve_node` went strictly through
+`scene_root().get_node_or_null(path)`, so anything not in a scene tree had no
+name.
+
+The fix is one optional `target` argument shared by every generic tool on both
+bridges, parsed in `bridge/src/handlers/target.rs` and nowhere else. Four tools
+on two bridges growing four targeting arguments would have been four grammars.
+`node_path` still works and still means a node, so the change is additive: the
+old argument's values are a subset of the new one's, and passing both is an
+error rather than a silent preference.
+
+`Engine::get_singleton(StringName) -> Option<Gd<Object>>` exists in gdext 0.5.5
+as assumed, alongside `has_singleton` and `get_singleton_list`. No dynamic-call
+fallback was needed.
+
+**The engine's singleton list is the authority, not the documentation's.**
+`@GlobalScope`'s property table lists 41 singletons and is what the coverage
+matrix counts, but `Engine::get_singleton_list()` is what actually resolves, and
+the two need not agree (editor-only singletons, the `*Manager` classes). The
+not-found error quotes the engine's list rather than a hardcoded one, so a
+mismatch is self-describing at the point it bites.
+
+### What the property machinery already allowed
+
+`apply_properties` took `Gd<Object>` rather than `Gd<Node>` from the start, so
+only naming was missing, not plumbing. The Node-scoped introspection helpers
+(`property_names`, `method_names`, `signal_names`) now delegate to Object-scoped
+ones; the earlier note in `editor/resource.rs` about `get_property_list` being
+reachable "only through each concrete class's own generated Deref chain" is
+about generic `Gd<T>` bounds, and does not apply to a concrete `Gd<Object>`.
+
+### gd_scene_node_call is deliberately not undo-wrapped
+
+Every other edit-time mutation goes through `EditorUndoRedoManager`, which
+records a do/undo pair. An arbitrary method call has no inverse: there is no
+undo for `set_cell` or `bake_navigation_mesh`. Wrapping one as `add_do_method`
+with no meaningful undo half would put an entry on the history that `gd_undo`
+cannot honour, so `gd_undo` would report success while restoring nothing.
+
+This is the argument `editor/resource.rs` already makes for resources, and it is
+resolved the same way: no wrapping, and the response says `undoable: false` so
+the property path and the method path can be told apart programmatically. The
+caller saves the scene itself.
+
+The same reasoning governs a singleton property write through
+`gd_scene_node_set_property`. Engine-global state is not scene state; putting it
+on the scene's undo history would let `gd_undo` claim to revert something the
+history never owned. Node targets stay undo-wrapped exactly as before, which the
+phase 7 `set_property_single_undo` and `set_property_redo` checks still prove.
+
+### What the three verbs did not close
+
+`object`-kind classes -- `PhysicsDirectSpaceState3D`, `SurfaceTool`,
+`MeshDataTool`, `EditorSelection`, `RegEx` -- are neither nodes, singletons, nor
+resources, and remain eval-only. They have no stable name to put in a `target`:
+some are handed out by other calls, some are constructed. Reaching them needs a
+handle table with a lifetime, which is a different and larger design than a
+resolver, and is why `gd_physics` wraps space-state queries as dedicated ops
+instead of exposing the object. Tracked as phase 16 in the coverage matrix.
+
+### Acceptance runs with --disable-eval
+
+`bun run phase10` drives the whole surface with eval switched off. That flag is
+the point of the runner: with `gd_game_eval` and `gd_editor_eval` registered,
+every check would pass whether or not any of this code existed.
