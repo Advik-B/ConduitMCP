@@ -70,6 +70,7 @@ impl HandlerRegistry {
         handlers.insert("gd_script_attach", editor::script::attach);
         handlers.insert("gd_script_detach", editor::script::detach);
         handlers.insert("gd_script_validate", editor::script::validate);
+        handlers.insert("gd_shader_validate", editor::shader::validate);
         handlers.insert("gd_resource_create", editor::resource::create);
         handlers.insert("gd_resource_set_property", editor::resource::set_property);
         handlers.insert("gd_resource_get_property", editor::resource::get_property);
@@ -284,6 +285,19 @@ mod tests {
         // `.import` sidecars are an editor-filesystem concern; a running game
         // reads the already-imported artifact and has no pipeline to drive.
         assert!(!HandlerRegistry::game().tool_names().contains(&"gd_import_settings"));
+    }
+
+    #[test]
+    fn editor_registry_includes_the_shader_validation_tool() {
+        assert!(HandlerRegistry::editor().tool_names().contains(&"gd_shader_validate"));
+    }
+
+    #[test]
+    fn shader_validation_stays_off_the_game_bridge() {
+        // Validation spawns a headless engine against the project's source
+        // tree, which is an edit-time concern; a running game has already
+        // loaded whatever shaders it uses.
+        assert!(!HandlerRegistry::game().tool_names().contains(&"gd_shader_validate"));
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub mod query;
 pub mod resource;
 pub mod scene;
 pub mod script;
+pub mod shader;
 pub mod session;
 pub mod support;
 pub mod ui;

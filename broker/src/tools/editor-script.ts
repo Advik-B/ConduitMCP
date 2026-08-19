@@ -46,4 +46,12 @@ export function registerEditorScriptTools(server: McpServer, manager: BridgeMana
     { path: z.string().describe("res:// path to the script to validate.") },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   );
+
+  editorTool(
+    "gd_shader_validate",
+    "Compile a .gdshader through the engine and report whether it compiles, with line-numbered diagnostics on failure. Does not launch the game or need a display.",
+    { path: z.string().describe("res:// path to the .gdshader to validate.") },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    "await",
+  );
 }

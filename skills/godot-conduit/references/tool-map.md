@@ -127,6 +127,7 @@ the human's undo stack stays coherent. Paths are relative to the edited scene ro
 | `gd_script_validate` | script | Reloads a script through the engine and reports compile diagnostics with line numbers. No game launch. |
 | `gd_script_attach` | script | Attaches an existing script to an edited-scene node, undo-wrapped. |
 | `gd_script_detach` | script | Removes the attached script. |
+| `gd_shader_validate` | script | Compiles a `.gdshader` through the engine and reports diagnostics with line numbers. Headless; no display needed. |
 | `gd_resource_create` | resource | Creates a resource of a given engine class at a `res://` path. Returns its type and `uid://`. |
 | `gd_resource_set_property` | resource | Writes one property of a resource file and re-saves it. |
 | `gd_resource_get_property` | resource | Reads one property of a resource file, or lists its property names. |

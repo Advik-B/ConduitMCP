@@ -125,6 +125,7 @@ const EXPECTED_TOOLS = [
   "gd_script_detach",
   "gd_script_validate",
   "gd_set_time_scale",
+  "gd_shader_validate",
   "gd_signal",
   "gd_status",
   "gd_step_frames",
@@ -156,9 +157,15 @@ describe("tool definitions", () => {
   // land the static surface just above the old 75 ceiling. Dynamic
   // gd_project_* tools are deliberately outside this count; they exist only
   // while a game exposes them and scale with the project, not the broker.
+  //
+  // Phase 14's gd_shader_validate takes the last slot phase 9 left spare. The
+  // ceiling is deliberately held at the exact current count rather than moved
+  // to a round number with headroom: the point of the bound is that adding a
+  // tool has to be argued for, and headroom is what lets that argument be
+  // skipped.
   test("the tool surface stays within the revised section 7.1 budget", () => {
     expect(registrations.length).toBeGreaterThanOrEqual(40);
-    expect(registrations.length).toBeLessThanOrEqual(90);
+    expect(registrations.length).toBeLessThanOrEqual(91);
   });
 
   test("every tool name is gd_-prefixed and unique", () => {
@@ -212,8 +219,8 @@ describe("tool definitions", () => {
     expect(tool?.config.annotations?.idempotentHint).toBe(false);
   });
 
-  test("gd_editor_get_state and gd_script_validate are read-only and non-destructive", () => {
-    for (const name of ["gd_editor_get_state", "gd_script_validate"]) {
+  test("gd_editor_get_state and the validators are read-only and non-destructive", () => {
+    for (const name of ["gd_editor_get_state", "gd_script_validate", "gd_shader_validate"]) {
       const tool = registrations.find((r) => r.name === name);
       expect(tool?.config.annotations?.readOnlyHint).toBe(true);
       expect(tool?.config.annotations?.destructiveHint).toBe(false);

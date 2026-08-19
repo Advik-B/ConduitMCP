@@ -1139,3 +1139,108 @@ its options conditionally, that check goes red and the rejection has to relax to
 `bun run phase10` drives the whole surface with eval switched off. That flag is
 the point of the runner: with `gd_game_eval` and `gd_editor_eval` registered,
 every check would pass whether or not any of this code existed.
+
+## Phase 14: shader compilation and diagnostics
+
+### The headless dummy renderer compiles shaders, so no display is needed
+
+The expectation going in was the opposite. `godot --headless` forces the dummy
+renderer (above), and shader compilation is a rendering-server concern, so the
+tool looked likely to need a real rendering context -- which would have meant
+spawning a windowed engine from the user's editor and moving the acceptance
+runner into the phase 2/5/6 Xvfb tier.
+
+Measured instead against Godot 4.7.1: the dummy renderer's `shader_set_code`
+runs the real `ShaderLanguage` compiler and reports errors. A canvas_item shader
+with a syntax error on line 4 prints
+
+```
+--Main Shader--
+    3 | void fragment() {
+E   4->  COLOR = vec4(1.0, 0.0, 0.0 1.0);
+SHADER ERROR: Expected ',' or ')' after argument.
+   at: (null) (:4)
+ERROR: Shader compilation failed.
+   at: shader_set_code (servers/rendering/dummy/storage/material_storage.cpp:192)
+```
+
+All five documented shader types (`canvas_item`, `spatial`, `particles`, `sky`,
+`fog`) compile clean there, and a deliberate error in a `spatial` shader is
+diagnosed the same way, so this is not a canvas-only path. `gd_shader_validate`
+is therefore `--headless` like `gd_script_validate`, needs no display, and
+`bun run phase14` sits in `ci:phases`.
+
+The one place the dummy renderer shows through: a missing or unrecognised
+`shader_type` is reported as `ERROR: Shader type <name> not supported in Dummy
+renderer.` That is a real defect in the shader -- the five real types all work --
+but the wording blames the renderer, which would read as a defect in the tool.
+The handler restates it in the shader's own terms, and the phase 14 runner
+asserts that "Dummy" never reaches the caller. If a future Godot adds a shader
+type the dummy renderer does not implement, that normalisation would turn a tool
+limitation into a false "unknown shader_type", and this is the check that would
+need revisiting.
+
+### Loading a shader resource does not compile it
+
+`ResourceLoader.load` on a broken `.gdshader` reports nothing at all: it returns
+a valid `Shader` object and prints no diagnostic. `Shader.get_shader_uniform_list()`
+is what forces the compile, and the errors appear synchronously inside that
+call. A validator built on load alone would report every broken shader as valid,
+which is why the driver script calls it and why that call is not incidental.
+
+`Shader` has no member that reports compile status (`get_default_texture_parameter`,
+`get_mode`, `get_shader_uniform_list`, `inspect_native_shader_code`,
+`set_default_texture_parameter`, and the `code` property are the whole surface in
+the 4.7 reference), so the verdict cannot come from the object. It comes from the
+output, and `gd_shader_validate` contributes no entry to `coverage-map.ts` for
+the same reason `gd_script_validate` does not: there is no engine member it
+fronts.
+
+### The subprocess route, and why the log route was not retried
+
+`gd_shader_validate` spawns `godot --headless --path <project> --script <driver>
+-- <shader path>` and reads the child's captured stdout/stderr after `try_wait`
+reports it exited, exactly as `gd_script_validate` does. The in-process
+alternative -- compile in the editor and tail its own log -- was not attempted,
+because the finding that moved `gd_script_validate` off `log_tail` (above) is
+about the editor process's log writer and not about GDScript: diagnostics
+emitted by the editor are not visible to a reader inside that same process on
+any bounded wait. `log_tail`'s module comment still advertises a
+`gd_script_validate` cursor that no longer exists; the only remaining consumer is
+`runtime/observe.rs`.
+
+Two mechanics settled by the same probe:
+
+- `--script` accepts an absolute path outside the project, so the driver script
+  is written to the OS temp directory and the user's project is never touched.
+  The fallback, had it not worked, was a dot-prefixed file in `res://`.
+- The child exits 0 whether or not the shader compiled, because a compile
+  failure is not observable from GDScript and the driver has nothing to report.
+  Output is the only verdict signal, which is the same conclusion `--check-only`
+  forced on macOS. `exit_code` is still returned so a future divergence is
+  visible without a CI round-trip.
+
+Cost is one engine startup per call: 566 ms against `example-project` on
+Windows, comparable to `gd_script_validate`.
+
+### Only the first shader error is reported, and a broken #include is misattributed
+
+The shader compiler stops at the first error, so `diagnostics` carries at most
+one entry -- unlike `gd_script_validate`, which can return several. This matches
+the engine's own shader editor.
+
+A `#include` of a path that does not exist produces no preprocessor diagnostic.
+The preprocessor fails silently and leaves the code without a reachable
+`shader_type`, so the error surfaces as the missing-`shader_type` message
+instead of naming the include. Valid includes work normally. The
+missing-`shader_type` message says so explicitly rather than pretending the
+declaration is simply absent.
+
+### gd_animation still creates value tracks only
+
+`bridge/src/handlers/runtime/animation.rs` creates `TrackType::VALUE` and
+nothing else. This is left as it is: `Animation.add_track`, `track_insert_key`,
+and the rest of the track API are reachable through `gd_resource_call` on both
+bridges, so it is a convenience gap in a dedicated tool rather than a capability
+gap in the surface. Phase 14's rule pass grades the animation-track headings on
+that basis.

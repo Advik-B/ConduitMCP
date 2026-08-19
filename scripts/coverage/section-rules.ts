@@ -132,7 +132,7 @@ const EXTERNAL_RULES: SectionRule[] = [
     kind: "concept",
     tier: "T0",
     via: "performed in Blender, Maya, or another modelling tool, outside the engine",
-    match: ["blender", "maya", "3ds max", "escn", "model export considerations", "exporting textures separately"],
+    match: ["blender", "maya", "3ds max", "escn", "model export considerations", "exporting textures separately", "unwrap from your 3d modeling software"],
   },
   {
     id: "external:csharp",
@@ -414,6 +414,7 @@ const T0_RULES: SectionRule[] = [
     match: [
       "import dock",
       "import option",
+      "convert colors with editor theme",
       "import parameter",
       "advanced import settings",
       "import configuration",
@@ -557,53 +558,17 @@ const T2_RULES: SectionRule[] = [
     ],
   },
   {
-    id: "t2:shader_author",
+    // Narrowed in phase 14. The old match claimed every heading that mentioned
+    // a shader, on the strength of "shader source has no create-and-validate
+    // path". That stopped being true when gd_resource_set_property could write
+    // Shader.code and gd_shader_validate could compile it. What is genuinely
+    // left is the compute pipeline, which needs a RenderingDevice, and a
+    // RenderingDevice only ever arrives as the return value of a call.
+    id: "t2:renderingdevice",
     kind: "action",
     tier: "T2",
-    via: "no shader tool; gd_resource_create makes the resource but nothing compiles it or returns diagnostics",
-    pages: ["tutorials/shaders"],
-    match: [""],
-  },
-  {
-    id: "t2:shader_elsewhere",
-    kind: "action",
-    tier: "T2",
-    via: "no shader tool; shader source has no create-and-validate path",
-    match: ["shader", "glsl", "compute pipeline", "renderingdevice", "custom shader", "blit"],
-  },
-  {
-    id: "t2:theme",
-    kind: "action",
-    tier: "T2",
-    via: "no theme tool; gd_resource_set_property writes a .tres blind and cannot read it back",
-    match: ["theme", "stylebox", "ui theme"],
-  },
-  {
-    id: "t2:bake",
-    kind: "action",
-    tier: "T2",
-    via: "no baking tool; gd_editor_eval only",
-    match: ["lightmap", "bake", "baking", "occlusion culling", "occludee", "voxelgi", "voxel gi", "sdfgi", "reflection probe", "global illumination"],
-  },
-  {
-    id: "t2:tileset_author",
-    kind: "action",
-    tier: "T2",
-    via: "no TileSet authoring tool; gd_tilemap paints cells but cannot define sources, terrains, or patterns",
-    match: [
-      "tileset",
-      "tilemap editor",
-      "terrain set",
-      "tile source",
-      "atlas",
-      "physics layer",
-      "custom data layer",
-      "selecting tiles",
-      "bucket fill",
-      "picker",
-      "premade tile placements",
-      "patterns",
-    ],
+    via: "a passing mention of RenderingDevice outside the compute tutorial; same handle gap, reached by keyword rather than by page",
+    match: ["renderingdevice", "compute pipeline"],
   },
   {
     id: "t2:plugin_toggle",
@@ -686,34 +651,6 @@ const T2_RULES: SectionRule[] = [
       "cursor list",
       "hardware display coordinates",
       "mouse and input coordinates",
-    ],
-  },
-  {
-    id: "t2:animation_editor",
-    kind: "action",
-    tier: "T2",
-    via: "gd_animation creates value tracks only; other track types and the animation editor have no tool",
-    match: [
-      "animation track",
-      "track type",
-      "bezier curve track",
-      "call method track",
-      "blend shape",
-      "audio playback track",
-      "animation playback track",
-      "property track",
-      "animation editor",
-      "keyframe",
-      "root motion",
-      "blendspace",
-      "blend tree",
-      "oneshot",
-      "timeseek",
-      "timescale",
-      "animationtree",
-      "state machine",
-      "statemachine",
-      "advance condition",
     ],
   },
   {
@@ -969,14 +906,6 @@ const RESIDUE_RULES: SectionRule[] = [
     match: ["what a mesh is", "surface", "meshdatatool", "immediatemesh", "decal", "fog volume", "volumetric fog", "occluder", "label3d", "textmesh", "3d text", "optimizing pixels drawn"],
   },
   {
-    id: "t2:skinning_page",
-    kind: "action",
-    tier: "T2",
-    via: "no theme tool; project-wide skinning writes theme resources blind",
-    pages: ["tutorials/ui/gui_skinning"],
-    match: [""],
-  },
-  {
     id: "concept:area_index",
     kind: "concept",
     tier: "T0",
@@ -1072,12 +1001,226 @@ const RESIDUE_RULES: SectionRule[] = [
   },
 ];
 
+/**
+ * Phase 14's corrective pass.
+ *
+ * Five clusters here were written in `a46ec0c` and never revisited, so they
+ * still described the surface as it stood before phases 11 and 12 shipped
+ * `gd_scene_node_call`, `gd_resource_call`, and `gd_resource_get_property`.
+ * `t2:theme` said a theme could be written blind and not read back; `t2:bake`
+ * said only eval reached baking. Both were false when they were read, which is
+ * exactly the rot this file's header warns hand-written tables drift into.
+ * `t2:shader_author` was worse than stale: a page-wide catch-all with
+ * `match: [""]` that graded all 101 headings on every shaders page as actions
+ * with not one concept among them, including 41 headings of prose about
+ * formatting and about porting GLSL.
+ *
+ * The criterion applied, stated once so each rule below can be checked against
+ * it rather than taken on trust:
+ *
+ * - The action is a method or property on a resource or node the target grammar
+ *   can name -> T1. Verified against the 4.7 reference rather than assumed:
+ *   `Theme.set_color`/`set_stylebox`/`set_type_variation`, `TileSet.add_source`/
+ *   `add_terrain_set`/`add_pattern`, `TileSetAtlasSource.create_tile`,
+ *   `Animation.add_track`/`track_insert_key`/`bezier_track_insert_key`,
+ *   `AnimationNodeBlendTree.add_node`, `VisualShader.add_node`/`connect_nodes`,
+ *   and `VoxelGI.bake` all exist and are reachable through `gd_resource_call`,
+ *   `gd_node_call`, or the property tools.
+ * - The action is an editor button or panel with no scriptable equivalent -> T3.
+ *   Also verified: `LightmapGI` has zero methods in the reference, and
+ *   `OccluderInstance3D` has only `get_bake_mask_value`/`set_bake_mask_value`,
+ *   so "Bake Lightmaps" and "Bake occluders" really are buttons rather than
+ *   tools nobody got round to writing.
+ * - The heading explains a language or a style rather than instructing anyone to
+ *   do something -> concept, and out of the denominator.
+ * - The action needs an object nothing can name -> stays T2, and names it.
+ *
+ * Deliberately not claimed: nothing here becomes T0 via `gd_shader_validate`.
+ * The shader tutorials contain no "check that it compiles" heading to claim, and
+ * matching one anyway so the new tool showed up in this half would be the same
+ * dishonesty the pass exists to correct. Its coverage is in the class reference
+ * and in the section 8 table, where it is real.
+ */
+const PHASE14_RULES: SectionRule[] = [
+  {
+    id: "concept:shader_style",
+    kind: "concept",
+    tier: "T0",
+    via: "formatting and naming conventions for shader source, not an engine action",
+    pages: ["tutorials/shaders/shaders_style_guide"],
+    match: [""],
+  },
+  {
+    id: "concept:glsl_translation",
+    kind: "concept",
+    tier: "T0",
+    via: "a language-difference reference for porting GLSL and Shadertoy code, not an engine action",
+    pages: ["tutorials/shaders/converting_glsl_to_godot_shaders"],
+    match: [""],
+  },
+  {
+    id: "concept:shaders_index",
+    kind: "concept",
+    tier: "T0",
+    via: "area index page, not an action",
+    pages: ["tutorials/shaders/index"],
+    match: [""],
+  },
+  {
+    id: "concept:theme_area_index",
+    kind: "concept",
+    tier: "T0",
+    via: "index entry naming the area, not an action",
+    match: ["gui skinning and themes"],
+  },
+  {
+    id: "t3:shader_editor_window",
+    kind: "action",
+    tier: "T3",
+    via: "gd_editor_ui; an editor window layout, with no resource behind it",
+    match: ["splitting the script or shader editor"],
+  },
+  {
+    id: "t3:visual_shader_editor",
+    kind: "action",
+    tier: "T3",
+    via: "gd_editor_ui; the graph editor's own interface, as distinct from the VisualShader resource it edits",
+    pages: ["tutorials/shaders/visual_shaders"],
+    match: ["using the visual shader editor", "visual shader node interface"],
+  },
+  {
+    id: "t2:compute_shader",
+    kind: "action",
+    tier: "T2",
+    via: "the compute workflow is create_local_rendering_device() then a pipeline built on the device it returns; nothing can name a returned object, so the whole page is out of reach until phase 16",
+    pages: ["tutorials/shaders/compute_shaders"],
+    match: [""],
+  },
+  {
+    id: "t1:visual_shader_graph",
+    kind: "action",
+    tier: "T1",
+    via: "gd_resource_create plus gd_resource_call on VisualShader (add_node, connect_nodes, set_mode)",
+    pages: ["tutorials/shaders/visual_shaders"],
+    match: [""],
+  },
+  {
+    id: "t1:shader_source",
+    kind: "action",
+    tier: "T1",
+    via: "gd_resource_create plus gd_resource_set_property on Shader.code, read back with gd_resource_get_property; gd_shader_validate then compiles it and returns line-numbered diagnostics",
+    pages: ["tutorials/shaders"],
+    match: [""],
+  },
+  {
+    id: "t1:shader_source_elsewhere",
+    kind: "action",
+    tier: "T1",
+    via: "gd_resource_set_property on Shader.code, with gd_resource_call on Image for the blit operations",
+    match: ["custom fogvolume shader", "writing the custom shader", "blitting", "blit shaders"],
+  },
+  {
+    id: "t3:theme_editor",
+    kind: "action",
+    tier: "T3",
+    via: "gd_editor_ui; the theme editor's preview and item-management panels, as distinct from the Theme resource they edit",
+    pages: ["tutorials/ui/gui_using_theme_editor"],
+    match: ["using the theme editor", "theme previews", "manage and import items"],
+  },
+  {
+    id: "t1:theme_resource",
+    kind: "action",
+    tier: "T1",
+    via: "gd_resource_create plus gd_resource_call on Theme (set_color, set_stylebox, set_theme_item, set_type_variation), and gd_resource_get_property to read it back",
+    match: ["theme", "stylebox", "ui theme", "customizing a control", "customizing a project", "beyond controls"],
+  },
+  {
+    id: "t3:lightmap_bake_button",
+    kind: "action",
+    tier: "T3",
+    via: "gd_editor_ui; LightmapGI has no methods at all in the 4.7 reference, so Bake Lightmaps is a plugin toolbar button with no scriptable equivalent",
+    pages: ["tutorials/3d/global_illumination/using_lightmap_gi"],
+    match: ["baking", "unwrap from within godot"],
+  },
+  {
+    id: "t3:occluder_bake_button",
+    kind: "action",
+    tier: "T3",
+    via: "gd_editor_ui; OccluderInstance3D exposes only its bake mask accessors, so baking occluders and previewing the result are editor actions",
+    pages: ["tutorials/3d/occlusion_culling"],
+    match: ["automatically baking occluders", "previewing occlusion culling"],
+  },
+  {
+    id: "t1:gi_configuration",
+    kind: "action",
+    tier: "T1",
+    via: "gd_scene_node_set_property and gd_node_call on the GI nodes; VoxelGI.bake is a method, and SDFGI, reflection probe, occlusion and lightmap quality settings are node and environment properties",
+    match: ["lightmap", "bake", "baking", "occlusion culling", "occludee", "voxelgi", "voxel gi", "sdfgi", "reflection probe", "global illumination"],
+  },
+  {
+    id: "t1:tileset_authoring",
+    kind: "action",
+    tier: "T1",
+    via: "gd_resource_call on TileSet (add_source, add_terrain_set, add_terrain, add_pattern, add_physics_layer) and on TileSetAtlasSource (create_tile, create_alternative_tile)",
+    match: [
+      "tileset",
+      "terrain set",
+      "tile source",
+      "atlas",
+      "physics layer",
+      "custom data layer",
+      "premade tile placements",
+      "patterns",
+      "tilesheet",
+      "collection of scenes",
+      "alternative tiles",
+      "assigning properties to multiple tiles",
+    ],
+  },
+  {
+    id: "t3:animation_editor_panel",
+    kind: "action",
+    tier: "T3",
+    via: "gd_editor_ui; the animation editor's own timeline, as distinct from the Animation resource it edits",
+    match: ["using the animation editor"],
+  },
+  {
+    id: "t1:animation_authoring",
+    kind: "action",
+    tier: "T1",
+    via: "gd_resource_call on Animation (add_track, track_insert_key, bezier_track_insert_key, audio_track_insert_key) and on AnimationNodeBlendTree (add_node, connect_node); gd_animation itself still creates value tracks only, a convenience gap rather than a capability gap (docs/api-gaps.md)",
+    match: [
+      "animation track",
+      "track type",
+      "bezier curve track",
+      "call method track",
+      "blend shape",
+      "audio playback track",
+      "animation playback track",
+      "property track",
+      "animation editor",
+      "keyframe",
+      "root motion",
+      "blendspace",
+      "blend tree",
+      "oneshot",
+      "timeseek",
+      "timescale",
+      "animationtree",
+      "state machine",
+      "statemachine",
+      "advance condition",
+    ],
+  },
+];
+
 export const SECTION_RULES: SectionRule[] = [
   ...CONCEPT_RULES,
   ...EXTERNAL_RULES,
   ...T0_RULES,
   ...T5_RULES,
   ...T3_RULES,
+  ...PHASE14_RULES,
   ...T2_RULES,
   ...T1_RULES,
   ...RESIDUE_RULES,

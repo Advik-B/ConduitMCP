@@ -117,6 +117,8 @@ These produce dead ends rather than error messages you can act on:
 - `gd_autoload` and `gd_input_map` write `project.godot`. They apply to *subsequently launched*
   games, not to the running editor or a live game.
 - `gd_script_create` does not compile-check. Run `gd_script_validate` before `gd_script_attach`.
+- Writing a shader is a resource property write (`gd_resource_set_property` on `Shader.code`); it does
+  not compile-check either. Run `gd_shader_validate` after, the way you would `gd_script_validate`.
 - `gd_play` runs what is on disk. `gd_scene_save` or `gd_scene_save_all` first, always.
 - Project-defined tools (`gd_project_` plus a method name) exist only while a game is
   connected, and disappear when it exits. Expect the tool list to change around `gd_play`.

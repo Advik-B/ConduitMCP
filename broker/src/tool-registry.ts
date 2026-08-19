@@ -125,6 +125,7 @@ export const TOOL_GROUP_BY_NAME: Record<string, ToolGroup> = {
   gd_script_attach: "script",
   gd_script_detach: "script",
   gd_script_validate: "script",
+  gd_shader_validate: "script",
 
   gd_resource_create: "resource",
   gd_resource_set_property: "resource",

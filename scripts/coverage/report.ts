@@ -297,10 +297,19 @@ because they are not judgment calls: the design says they exist and they do not.
 | Section 8 text | Status |
 |---|---|
 | "enable or disable editor plugins" | **Absent.** No tool; \`gd_project_set_setting\` can write \`editor_plugins/enabled\` blind. |
-| "create and read shaders and themes" | **Absent.** \`gd_resource_create\` can make the resource; nothing compiles a shader or returns diagnostics, and no theme tool exists. |
-| "Shader creation gets the same log-derived compile diagnostics" | **Absent.** \`gd_script_validate\` is script-only. |
 | "and manage translations" | **Absent.** No translation tool; the CSV/PO pipeline is editor-menu driven. |
 | "process-mode control" (section 8, observation and debugging) | **Absent** as a dedicated tool; reachable as a node property. |
+
+"Create and read shaders and themes" and "shader creation gets the same
+log-derived compile diagnostics" left this table in phase 14, the first through
+tools that already existed and the second through a new one. A shader's source
+is a resource property, so \`gd_resource_create\` plus
+\`gd_resource_set_property\` write it and \`gd_resource_get_property\` reads it
+back; \`gd_shader_validate\` then compiles it in a headless subprocess and
+returns line-numbered diagnostics. A \`Theme\` is reachable the same way, through
+\`gd_resource_call\` on \`set_color\`, \`set_stylebox\`, and
+\`set_type_variation\`. Neither is a dedicated theme tool, and the tutorial
+tiering says so: those headings are T1, not T0.
 
 "Read and set import settings" left this table in phase 13. \`gd_import_settings\`
 ships it, though not literally "through the import plugin surface": it reads and
@@ -354,12 +363,36 @@ rather than a silent insert, which is sound because the importer writes its full
 default set on first import; the runner asserts that property rather than
 assuming it (\`docs/api-gaps.md\`).
 
-### Next
+**Phase 14: shader diagnostics, and a corrected audit.** Predicted as five
+authoring tools -- TileSet sources and terrains, theme resources, animation
+track types, shader create-and-validate, and lightmap/occlusion baking -- it
+shipped as one tool plus a correction, because four of those five were already
+reachable and this document had stopped saying so.
 
-**Phase 14: authoring surfaces.** TileSet sources and terrains, theme resources,
-animation track types beyond value tracks, shader create-and-validate, and
-lightmap/occlusion baking. Larger and more separable than the phases above; each
-is its own tool with its own acceptance criterion.
+\`gd_shader_validate\` is the tool: it compiles a \`.gdshader\` in a short-lived
+headless subprocess and returns line-numbered diagnostics, the way
+\`gd_script_validate\` does for scripts. *Accepted* by \`bun run phase14\` with
+\`--disable-eval\`: a shader with a deliberate error on line 4 comes back
+\`valid: false\` naming line 4, and comes back \`valid: true\` once fixed. The
+headless part was the open question and the answer was measured rather than
+assumed -- Godot's dummy renderer does compile shaders and does report errors,
+so no display is needed and the runner belongs in \`ci:phases\`
+(\`docs/api-gaps.md\`).
+
+The correction is the larger half. \`Theme.set_color\`, \`TileSet.add_source\`,
+\`TileSetAtlasSource.create_tile\`, \`Animation.add_track\`, and \`VoxelGI.bake\`
+are all in the 4.7 reference and all reachable through \`gd_resource_call\` and
+\`gd_node_call\`, which phases 11 and 12 shipped; the tutorial rules had not been
+revisited since before those phases and still called them unreachable. Baking
+lightmaps and occluders is the one genuine absence in that list, and it is not a
+missing tool: \`LightmapGI\` has no methods at all and \`OccluderInstance3D\` has
+only its bake mask accessors, so those are editor buttons and are now graded T3
+rather than T2. The shader cluster was a page-wide catch-all that graded 101
+headings as unreachable actions, 42 of them prose about formatting and about
+porting GLSL. Correcting the rules took tutorial actions graded T2 or worse from
+504 to 314 without a single tool being added for them.
+
+### Next
 
 **Phase 15: editor plugin and translation management.** The two remaining
 section 8 items, both small.
