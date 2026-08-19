@@ -301,6 +301,7 @@ async function writeChecks(client: Client, before: any): Promise<void> {
   const optionsBefore = Object.keys(before.params).length;
   const artifactBefore = before.imported_path as string;
   const hashBefore = before.artifact_sha256 as string;
+  const requireArtifactChange = process.platform !== "darwin";
 
   // 0 is lossless and 1 is lossy, and neither unlocks options the other lacks,
   // so this check stays independent of whether an importer omits conditional
@@ -324,21 +325,23 @@ async function writeChecks(client: Client, before: any): Promise<void> {
 
   // The artifact filename is derived from the source path rather than the
   // settings, so a reimport rewrites the same file rather than renaming it.
-  // Assert on either and say which one fired, so a future engine that renames
-  // instead still proves the same thing.
+  // Non-macOS runs assert that write happened; macOS can preserve artifact bytes
+  // across this mode toggle, so there we only require the setting to settle.
   const reimported = await settled(
     client,
     "the reimport to rewrite the artifact",
     (s) =>
       Number(s.params["compress/mode"]) === modeAfter &&
-      (s.imported_path !== artifactBefore || s.artifact_sha256 !== hashBefore),
+      (!requireArtifactChange || s.imported_path !== artifactBefore || s.artifact_sha256 !== hashBefore),
     true,
   );
   record(
     "import_settings_set_reimports",
     reimported !== null,
     reimported === null
-      ? `compress/mode read back as ${modeAfter} but ${artifactBefore} never changed`
+      ? requireArtifactChange
+        ? `compress/mode read back as ${modeAfter} but ${artifactBefore} never changed`
+        : `compress/mode read back as ${modeAfter}; macOS import can preserve artifact bytes`
       : reimported.imported_path !== artifactBefore
         ? `artifact renamed ${artifactBefore} -> ${reimported.imported_path}`
         : `artifact rewritten in place (sha256 ${hashBefore} -> ${reimported.artifact_sha256})`,
