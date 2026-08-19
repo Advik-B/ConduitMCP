@@ -1,0 +1,1 @@
+docs/coverage-matrix.json filter=lfs diff=lfs merge=lfs -text

@@ -76,6 +76,7 @@ reads none of these; in particular the broker never reads `GODOT_BIN`.
 | Variable | Read by | Effect |
 | --- | --- | --- |
 | `GODOT_BIN` | `tests/evals/harness.ts`, `scripts/setup.ts` | Path to a Godot 4.4+ editor binary for the acceptance runners. Falls back to the `tools/godot/GODOT_BIN` pointer file written by `bun scripts/setup.ts`. |
+| `CONDUIT_GODOT_DOCS` | `scripts/coverage/*` | Root of an offline Godot HTML documentation build (the directory holding `_sources/`), used by `bun run coverage` to regenerate `docs/coverage-matrix.md`. `--docs <dir>` overrides it. |
 | `GODOT_VERSION` | `scripts/setup.ts`, CI workflows | Pin the Godot release tag `setup.ts` downloads, for example `4.7.1-stable`, instead of resolving the latest. |
 | `TAG` | `scripts/check-version.ts` | The release tag to validate against the workspace `Cargo.toml` version. Set by the release workflow. |
 | `GDRUST_SUPPRESSED_WARNINGS` | gdext, via `scripts/demo/record.ts` | Silences a named gdext warning during demo recording. Consumed by the dependency, not by Conduit. |
