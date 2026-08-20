@@ -40,6 +40,7 @@ export const TOOL_GROUPS = [
   "debug",
   "collab",
   "classdb",
+  "object",
   "eval",
   "pixel",
 ] as const;
@@ -100,6 +101,14 @@ export const TOOL_GROUP_BY_NAME: Record<string, ToolGroup> = {
   gd_multiplayer: "net",
 
   gd_classdb: "classdb",
+
+  // Handle bookkeeping is its own group because it spans both bridges and
+  // belongs to neither: the game half serves gd_node_call, the editor half
+  // serves gd_scene_node_call. Dropping it removes the bookkeeping tools but
+  // not the capture flag on those verbs, which is a stated consequence in
+  // docs/environment.md rather than something the registration varies on.
+  gd_object: "object",
+  gd_scene_object: "object",
 
   // edit-time
   gd_scene_open: "scene",

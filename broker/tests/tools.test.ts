@@ -95,6 +95,7 @@ const EXPECTED_TOOLS = [
   "gd_node_rename",
   "gd_node_reparent",
   "gd_node_set_property",
+  "gd_object",
   "gd_pause",
   "gd_perf",
   "gd_physics",
@@ -115,6 +116,7 @@ const EXPECTED_TOOLS = [
   "gd_scene_node_call",
   "gd_scene_node_get_property",
   "gd_scene_node_set_property",
+  "gd_scene_object",
   "gd_scene_open",
   "gd_scene_save",
   "gd_scene_save_all",
@@ -171,9 +173,18 @@ describe("tool definitions", () => {
   // section 8 names and the surface lacked. The ceiling again lands on the
   // exact new count, so phase 16 has to make its own case rather than spend
   // headroom this phase left behind.
+  //
+  // Phase 16 makes that case and moves it to 95. gd_object and gd_scene_object
+  // are the bookkeeping half of the last generic verb, and the cluster they
+  // close is the largest single one left in the coverage matrix: 3732 members
+  // across 295 Object-derived classes that no path, class name, or res:// path
+  // can name. They are two rather than one because the handle table is per
+  // bridge process, so a single tool would need a bridge argument that the
+  // gd_node_call / gd_scene_node_call split already encodes in the name. The
+  // ceiling again lands on the exact new count.
   test("the tool surface stays within the revised section 7.1 budget", () => {
     expect(registrations.length).toBeGreaterThanOrEqual(40);
-    expect(registrations.length).toBeLessThanOrEqual(93);
+    expect(registrations.length).toBeLessThanOrEqual(95);
   });
 
   test("every tool name is gd_-prefixed and unique", () => {

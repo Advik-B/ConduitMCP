@@ -7,6 +7,7 @@
 pub mod dispatcher;
 pub mod env;
 pub mod handlers;
+pub mod handles;
 pub mod history;
 pub mod protocol;
 pub mod transport;

@@ -55,6 +55,7 @@ import { registerGameRenderTools } from "./tools/game-render.ts";
 import { registerGameTilemapTools } from "./tools/game-tilemap.ts";
 import { registerGameTreeTools } from "./tools/game-tree.ts";
 import { registerGameWindowTools } from "./tools/game-window.ts";
+import { registerObjectTools } from "./tools/objects.ts";
 import {
   AWAIT_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
@@ -319,7 +320,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     "gd_node_get_info",
     "Report a target's class and its property, signal, and method names. Nodes also report children and tree path; a singleton has neither.",
     {
-      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:OS.").optional(),
+      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:OS, or 'object:<n>' for a handle held by gd_object.").optional(),
       node_path: z.string().describe("Absolute path to the node. Legacy alias for target; pass one or the other, not both.").optional(),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -329,9 +330,10 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     "gd_node_get_property",
     "Read one property of a live node or an engine singleton, returned as tagged JSON.",
     {
-      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:OS or singleton:RenderingServer.").optional(),
+      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:RenderingServer, or 'object:<n>' for a handle held by gd_object.").optional(),
       node_path: z.string().describe("Absolute path to the node. Legacy alias for target; pass one or the other, not both.").optional(),
       property: z.string().describe("Property name, for example position."),
+      capture: z.boolean().describe("Take an object handle on the value, if it is an object, and report it as handle. Reaches objects no path names, such as a space state or an unsaved resource.").optional(),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   );
@@ -340,7 +342,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     "gd_node_set_property",
     "Set one property of a live node or an engine singleton and return its previous value. Values may be plain JSON or tagged Godot types ({\"__type\":\"Vector2\",\"x\":..,\"y\":..}).",
     {
-      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:OS or singleton:RenderingServer.").optional(),
+      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:RenderingServer, or 'object:<n>' for a handle held by gd_object.").optional(),
       node_path: z.string().describe("Absolute path to the node. Legacy alias for target; pass one or the other, not both.").optional(),
       property: z.string().describe("Property name to write."),
       value: z.any().describe("New value; plain JSON or a tagged Godot type."),
@@ -352,10 +354,11 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
     "gd_node_call",
     "Call a method on a live node or an engine singleton with converted arguments, and return its result. 'singleton:<Class>' reaches OS, Time, Input, RenderingServer, PhysicsServer3D, and every other engine singleton without eval.",
     {
-      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:OS or singleton:RenderingServer.").optional(),
+      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:RenderingServer, or 'object:<n>' for a handle held by gd_object.").optional(),
       node_path: z.string().describe("Absolute path to the node. Legacy alias for target; pass one or the other, not both.").optional(),
       method: z.string().describe("Method name to call."),
-      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types.").optional(),
+      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types. An object handle is {\"__type\":\"Object\",\"handle\":\"object:3\"}.").optional(),
+      capture: z.boolean().describe("Take an object handle on the returned value, if it is an object, and report it as handle. Reaches objects no path names, such as a space state.").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   );
@@ -564,6 +567,7 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
   });
 
   registerClassDbTools(server, manager, timeouts);
+  registerObjectTools(server, manager, timeouts);
   registerEditorSceneTools(server, manager, timeouts);
   registerEditorWiringTools(server, manager, timeouts);
   registerEditorScriptTools(server, manager, timeouts);

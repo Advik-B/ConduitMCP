@@ -75,10 +75,10 @@ pub fn call_method(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
         };
 
         let result = object.call(method.as_str(), &call_args);
-        Ok(target_response(
-            &spec,
-            json!({ "method": method, "result": variant_to_json(&result) }),
-        ))
+        let mut response =
+            target_response(&spec, json!({ "method": method, "result": variant_to_json(&result) }));
+        crate::handles::apply_capture(args, &result, &mut response)?;
+        Ok(response)
     })())
 }
 

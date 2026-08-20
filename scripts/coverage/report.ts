@@ -273,20 +273,42 @@ handle. That is why the class-kind table below shows resources near-fully T1
 while the runtime row stays far worse than the editor row -- the headline tier is
 the better of the two bridges, and for resources only one bridge reaches them.
 
-### Open: non-node engine objects have no handle
+### Closed: non-node engine objects have handles
 
-What remains is one shape of problem: ${objectGap} members across ${objectClasses}
-\`Object\`-derived classes that are neither nodes, singletons, nor resources -- \`PhysicsDirectSpaceState3D\`,
-\`SurfaceTool\`, \`MeshDataTool\`, \`EditorSelection\`, \`RegEx\`, \`Semaphore\`. Some are
-handed out by other calls, some are constructed. Nothing in the surface can hold
-one across two tool calls, which is why \`gd_physics\` had to wrap space-state
-queries as dedicated ops rather than exposing the object.
+The fourth verb, and the one that needed a different mechanism. 3732 members
+across 295 \`Object\`-derived classes that are neither nodes, singletons, nor
+resources -- \`PhysicsDirectSpaceState3D\`, \`SurfaceTool\`, \`MeshDataTool\`,
+\`EditorSelection\`, \`RegEx\`, \`Semaphore\` -- had no stable name the way a node
+path or a class name does, so nothing in the surface could hold one across two
+tool calls. That is why \`gd_physics\` wraps space-state queries as dedicated ops
+rather than exposing the object.
 
-Closing it needs something the other three did not: a handle table with a
-lifetime, because these objects have no stable name the way a node path or a
-class name does. That is a materially larger design question than the three
-resolvers above, which is why the roadmap ranks it below the authoring surfaces
-rather than above them.
+A handle is that name. \`bridge/src/handles.rs\` holds a live object per bridge
+process and \`object:<n>\` joins \`singleton:<Class>\` in the target grammar, so the
+same seven generic tools reach it. Two ways to get one: \`gd_object\` /
+\`gd_scene_object\` \`create\` builds a \`RefCounted\` class by name, and
+\`capture: true\` on the call and property-read verbs takes one on the value that
+came back. Two ways to spend one: as \`target\`, or as
+\`{"__type":"Object","handle":"object:<n>"}\` in an argument or a property value,
+which is what makes \`PhysicsDirectSpaceState3D.intersect_ray(params)\` reachable
+without eval.
+
+Three limits are worth naming here rather than only in \`docs/api-gaps.md\`.
+\`create\` refuses non-\`RefCounted\` classes, so those are captured rather than
+constructed. Capture is top-level only: an object nested in a returned array or
+dictionary still stringifies. And a handle dies with its process, which is what
+makes the table per bridge and the tool two tools.
+
+After the regrade, ${objectGap} object-kind members across ${objectClasses}
+classes remain at T2: signals, which no generic verb reaches the way
+\`gd_signal\` reaches one on a node.
+
+**Resources at runtime are still graded T2**, and the grading is deliberate.
+A handle reaches a runtime resource when some call hands one out -- \`World3D\`
+through \`get_world_3d\` is the motivating case, and the phase 16 runner proves
+it -- but that is conditional on such a call existing, and grading 3475 members
+T1 on a conditional would move the runtime row by thousands on a claim the
+acceptance does not make.
 
 ## Capabilities the whitepaper specifies that are not implemented
 
@@ -424,11 +446,41 @@ enabled plugin's \`_enter_tree\`, so the runner needs no display and belongs in
 the handler reads the flag back to tell a refusal from a success. POT
 extraction stayed out for the reason given above (\`docs/api-gaps.md\`).
 
+**Phase 16: object handles.** The last generic verb, and the largest single
+cluster left: 3732 members across 295 \`Object\`-derived classes that no node
+path, class name, or \`res://\` path could name. \`bridge/src/handles.rs\` holds a
+live object per bridge process, \`object:<n>\` joins the target grammar, and
+\`gd_object\` / \`gd_scene_object\` create, list, and release. A handle is spent as
+a \`target\` or as \`{"__type":"Object","handle":"object:<n>"}\` in an argument, so
+\`PhysicsDirectSpaceState3D.intersect_ray(params)\` -- the query \`gd_physics\` had
+to wrap as a dedicated op -- is now drivable generically. *Accepted* by
+\`bun run phase16\`, the editor half with \`--disable-eval\`: a \`ConfigFile\` built
+from nothing carries its state across three separate calls and lands on disk, a
+\`TileSetAtlasSource\` goes into \`TileSet.add_source\` as an argument and comes
+back out through \`capture\`, a constructed ray query runs against a captured
+space state in a headless game, and a handle to a node something else freed
+answers \`object_not_found\` instead of crashing the bridge.
+
+Four things were measured rather than assumed. A dead handle is a lookup
+through \`try_from_instance_id\` and never a dereference, so freeing an object
+under a handle is a clean error. The engine answers \`get_class()\` with its
+implementation type (\`GodotPhysicsDirectSpaceState3D\`), not the documented
+abstract one. Editor selection does survive a headless editor, so the runner
+needs no display. And the runner found a bug older than the phase: a typed
+array returned by a dynamic call was reported as \`[]\`, because gdext refuses to
+convert one into the untyped \`Array<Variant>\` and \`variant_to_json\` swallowed
+the refusal (\`docs/api-gaps.md\`).
+
 ### Next
 
-**Phase 16: object handles.** The last generic verb, and the only remaining
-class-reference cluster. Deliberately last: unlike the three resolvers, it needs
-a handle table with a lifetime, and its cost is design rather than plumbing.
+Nothing in the class reference. The four generic verbs the coverage matrix
+named are all shipped, and what the tables still grade T2 after phase 16 is
+signals on non-node objects and the runtime-resource conditional described
+above, both of which are gradings rather than gaps in the surface.
+
+The honest next step is to regenerate the matrix and see what the numbers
+actually say, which needs an offline documentation build and writes a new 8 MB
+LFS version -- deliberately not done as part of this phase.
 
 XR is deliberately absent from this list. It needs hardware and a runtime the
 bridge cannot simulate, and the honest answer is to say so rather than to ship a

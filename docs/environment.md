@@ -83,7 +83,7 @@ reads none of these; in particular the broker never reads `GODOT_BIN`.
 
 ## Tool groups
 
-The default surface is 93 tools, which is a lot of context for a client that
+The default surface is 95 tools, which is a lot of context for a client that
 only needs some of it. `--tool-groups` slims it, in either of two forms:
 
 ```
@@ -96,7 +96,8 @@ messages list the valid groups. The groups are:
 
 `runtime`, `tree`, `physics`, `render`, `audio`, `animation`, `tilemap`,
 `window`, `net`, `scene`, `wiring`, `script`, `resource`, `project`, `state`,
-`assets`, `files`, `export`, `debug`, `collab`, `classdb`, `eval`, `pixel`.
+`assets`, `files`, `export`, `debug`, `collab`, `classdb`, `object`, `eval`,
+`pixel`.
 
 `core` is always registered and cannot be named: it holds `gd_ping`,
 `gd_status`, `gd_game_list`, `gd_get_events`, and the session, addon, and engine
@@ -109,6 +110,14 @@ Groups only ever subtract from what the other flags already permit. Naming
 for `--enable-pixel-tools`. Project-defined `gd_project_*` tools are not part of
 any group; they appear and disappear with the running game and are governed by
 `--disable-eval`.
+
+`object` holds `gd_object` and `gd_scene_object`, the handle bookkeeping for
+both bridges. Dropping it removes those two tools but not the `capture` flag on
+the generic verbs, because group membership is a table keyed by tool name and
+not something the registrations vary their schemas on. A deployment that drops
+`object` can therefore still mint handles; they live until the process exits, and
+the table refuses new ones once it is full rather than evicting. Drop the group
+when handles are not wanted at all, not as a way to switch capture off.
 
 ## Audit log
 

@@ -22,6 +22,7 @@ tool's own schema description, which is the authority. This file is a map, not a
 - [Debugging (debug)](#debugging-debug)
 - [Editor collaboration (collab)](#editor-collaboration-collab)
 - [Reflection (classdb)](#reflection-classdb)
+- [Object handles (object)](#object-handles-object)
 - [Evaluation (eval)](#evaluation-eval)
 - [Pixel fallback (pixel)](#pixel-fallback-pixel)
 - [Project-defined tools](#project-defined-tools)
@@ -191,6 +192,33 @@ These keep a watching human oriented, and recover a session from a modal dialog.
 | `gd_classdb` | editor | Engine class reflection: `list_classes`, `class_info`, `properties`, `methods`, `signals`, `constants`, `enums`, `parents`, `exists`. Always routed to the editor, even for questions about the game. |
 
 Use this instead of recalling an API from memory. It answers from the exact engine build in use.
+
+## Object handles (object)
+
+| Tool | Bridge | What it does |
+| --- | --- | --- |
+| `gd_object` | game | Handles on live objects in the running game: `create`, `list`, `release`, `release_all`. |
+| `gd_scene_object` | editor | The same, in the editor process. Handles are per bridge, so a game handle is meaningless here and the tool name says which one you hold. |
+
+A handle names an object nothing else can: `SurfaceTool`, `RegEx`, a physics
+query-parameter object, a space state, an unsaved resource. Two ways to get
+one: `create` builds a `RefCounted` class by name, and `capture: true` on
+`gd_node_call`, `gd_node_get_property`, `gd_scene_node_call`,
+`gd_scene_node_get_property`, `gd_resource_call`, or
+`gd_resource_get_property` takes one on the value that came back.
+
+Spend it two ways: as `target: "object:3"` on those same verbs, or as
+`{"__type": "Object", "handle": "object:3"}` in an `args` array or a property
+value. Only the top-level returned value is captured; objects nested inside a
+returned array or dictionary are not.
+
+`create` refuses a Node (use `gd_tree_mutate add_node` or `gd_node_add`) and
+refuses a non-`RefCounted` class, because a handle could not own it. Those are
+the classes you capture rather than construct. A handle lives until it is
+released or the process exits; 64 per bridge, and minting past that is refused
+rather than silently evicting one you still hold. A handle to a manually
+managed object that something else freed reports `object_not_found` on use and
+`valid: false` in `list`.
 
 ## Evaluation (eval)
 

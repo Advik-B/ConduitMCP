@@ -34,7 +34,7 @@ Nothing listens on the network, and the bridge refuses to activate in release bu
 
 ## What the agent can do
 
-98 tools, 93 exposed by default and the rest behind opt-in flags. The broad strokes:
+100 tools, 95 exposed by default and the rest behind opt-in flags. The broad strokes:
 
 - **Edit scenes the way the editor does**: open, create, and save scenes; add, remove, reparent, rename, and duplicate nodes; set properties with full Godot typing (vectors, colors, resources); attach and validate scripts; wire signals and groups; manage autoloads and the input map. Every mutation is undo-wrapped, so one `gd_undo` reverses it and the developer's undo history stays coherent.
 
@@ -51,6 +51,7 @@ Nothing listens on the network, and the bridge refuses to activate in release bu
 ![The editor halted at a breakpoint in player.gd with the call stack and locals visible](docs/media/debugger-break.png)
 
 - **Ground itself in the engine**: query ClassDB for any class's properties, methods, and signals, so the agent works from the engine's actual API surface instead of guessing.
+- **Hold engine objects that have no name**: a `SurfaceTool`, a physics query, an unsaved sub-resource, a space state. `gd_object` and `gd_scene_object` hand back a handle, and `capture` takes one on whatever a call returned, so the agent can build an object over several calls or pass one method's result into another's arguments without writing GDScript.
 - **Stay legible to the human**: select and inspect nodes in the developer's editor, open scripts at a line, observe and dismiss dialogs, and capture editor screenshots, so a person watching the editor can follow what the agent is doing. A toolbar indicator shows the link state, the editor's Output log carries a line per undo-wrapped action, and a Conduit bottom panel lists the tool-call history.
 - **Expose project-defined tools**: methods on nodes in a `conduit_tools` group appear as first-class MCP tools with typed schemas, so a project can teach the agent verbs like `gd_project_spawn_wave`.
 

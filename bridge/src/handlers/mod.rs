@@ -18,6 +18,7 @@ pub mod args;
 pub mod classdb;
 pub mod editor;
 pub mod node_query;
+pub mod objects;
 pub mod runtime;
 pub mod target;
 
@@ -104,6 +105,7 @@ impl HandlerRegistry {
         handlers.insert("gd_export_presets", editor::import_export::export_presets);
         handlers.insert("gd_editor_quit", editor::session::editor_quit);
         handlers.insert("gd_classdb", classdb::classdb);
+        handlers.insert("gd_scene_object", objects::object_tool);
         HandlerRegistry { handlers }
     }
 
@@ -143,6 +145,7 @@ impl HandlerRegistry {
         handlers.insert("gd_http_request", runtime::net::http_request);
         handlers.insert("gd_websocket", runtime::net::websocket);
         handlers.insert("gd_multiplayer", runtime::net::multiplayer);
+        handlers.insert("gd_object", objects::object_tool);
         HandlerRegistry { handlers }
     }
 
@@ -335,6 +338,18 @@ mod tests {
         for tool in ["gd_project_tools_list", "gd_project_call", "gd_http_request", "gd_websocket", "gd_multiplayer"] {
             assert!(!names.contains(&tool), "{tool} must not be registered on the editor bridge");
         }
+    }
+
+    #[test]
+    fn the_object_tool_is_named_for_its_bridge() {
+        // One handler, two names. The table is per process, so a handle taken
+        // out of the game means nothing to the editor; the name says which
+        // process holds it, the way gd_node_call and gd_scene_node_call already
+        // do for the verbs that consume it.
+        assert!(HandlerRegistry::game().tool_names().contains(&"gd_object"));
+        assert!(!HandlerRegistry::game().tool_names().contains(&"gd_scene_object"));
+        assert!(HandlerRegistry::editor().tool_names().contains(&"gd_scene_object"));
+        assert!(!HandlerRegistry::editor().tool_names().contains(&"gd_object"));
     }
 
     #[test]

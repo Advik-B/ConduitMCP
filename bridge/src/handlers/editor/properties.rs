@@ -34,10 +34,12 @@ pub fn get_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
                 spec.label()
             )));
         }
-        canonicalise(
+        let mut response = canonicalise(
             &spec,
             target_response(&spec, json!({ "property": property, "value": variant_to_json(&value) })),
-        )
+        )?;
+        crate::handles::apply_capture(args, &value, &mut response)?;
+        Ok(response)
     })())
 }
 
@@ -69,7 +71,9 @@ pub fn set_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
         // A singleton write is engine-global state, not scene state: putting it
         // on the scene history would let gd_undo claim to revert something the
         // history never owned, so it is applied directly and reported as not
-        // undoable rather than pretending otherwise.
+        // undoable rather than pretending otherwise. A handle-named object is
+        // the same case for the same reason: it is not part of the edited
+        // scene, so the scene history cannot own a write to it.
         let action_name = match &spec {
             TargetSpec::Node(path) => {
                 let node = resolve_editor_node(path)?;
@@ -81,7 +85,7 @@ pub fn set_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
                 ur.commit_action();
                 Some(name)
             }
-            TargetSpec::Singleton(_) => {
+            TargetSpec::Singleton(_) | TargetSpec::Object(_) => {
                 object.set(property.as_str(), &variant);
                 None
             }
@@ -138,13 +142,15 @@ pub fn call_method(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
         };
 
         let result = object.call(method.as_str(), &call_args);
-        canonicalise(
+        let mut response = canonicalise(
             &spec,
             target_response(
                 &spec,
                 json!({ "method": method, "result": variant_to_json(&result), "undoable": false }),
             ),
-        )
+        )?;
+        crate::handles::apply_capture(args, &result, &mut response)?;
+        Ok(response)
     })())
 }
 

@@ -77,8 +77,23 @@ function tierRuntime(record: ClassRecord, member: MemberRecord, rules: CoverageR
     }
     return { tier: "T2", via: "gd_game_eval" };
   }
-  // Resources and bare RefCounted helpers still have no runtime handle; the
-  // resource verbs are edit-time (they load and save through res:// paths).
+  // Object-kind classes became addressable when the handle table landed: an
+  // object with no name is constructed with gd_object or captured from a call
+  // that hands one out, and then named as `target: object:<n>`
+  // (bridge/src/handles.rs).
+  if (record.kind === "object") {
+    if (member.kind === "method") return { tier: "T1", via: "gd_node_call (target: object:...)" };
+    if (member.kind === "property") {
+      return { tier: "T1", via: "gd_node_get_property / gd_node_set_property (target: object:...)" };
+    }
+    return { tier: "T2", via: "gd_game_eval" };
+  }
+  // Resources are deliberately NOT regraded here. A handle reaches a runtime
+  // resource when some call hands one out -- World3D through get_world_3d is
+  // the motivating case -- but that is conditional on such a call existing,
+  // and grading 3475 members T1 on a conditional would move the runtime row by
+  // thousands on a claim the acceptance does not make. The resource verbs
+  // remain edit-time (they load and save through res:// paths).
   return { tier: "T2", via: "gd_game_eval" };
 }
 
@@ -100,6 +115,15 @@ function tierEditor(record: ClassRecord, member: MemberRecord, rules: CoverageRu
   if (record.kind === "resource") {
     if (member.kind === "property") return { tier: "T1", via: "gd_resource_get_property / gd_resource_set_property" };
     if (member.kind === "method") return { tier: "T1", via: "gd_resource_call" };
+    return { tier: "T2", via: "gd_editor_eval" };
+  }
+  // The editor half of the handle table, reached the same way through
+  // gd_scene_object and the gd_scene_node_* verbs.
+  if (record.kind === "object") {
+    if (member.kind === "method") return { tier: "T1", via: "gd_scene_node_call (target: object:...)" };
+    if (member.kind === "property") {
+      return { tier: "T1", via: "gd_scene_node_get_property / gd_scene_node_set_property (target: object:...)" };
+    }
     return { tier: "T2", via: "gd_editor_eval" };
   }
   return { tier: "T2", via: "gd_editor_eval" };

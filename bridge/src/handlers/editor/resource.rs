@@ -176,7 +176,10 @@ pub fn get_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
                         "resource at '{path}' has no property '{property}'"
                     )));
                 }
-                Ok(json!({ "path": path, "property": property, "value": variant_to_json(&value) }))
+                let mut response =
+                    json!({ "path": path, "property": property, "value": variant_to_json(&value) });
+                crate::handles::apply_capture(args, &value, &mut response)?;
+                Ok(response)
             }
         }
     })())
@@ -192,7 +195,7 @@ pub fn get_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
 ///
 /// Not undo-wrapped, for the reason this module's header already gives.
 pub fn call_method(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
-    let prepared: Result<(String, String, Value, bool), BridgeError> = (|| {
+    let prepared: Result<(String, String, Value, bool, Value), BridgeError> = (|| {
         let path = require_str(args, "path")?;
         validate_project_path(&path)?;
         let method = require_str(args, "method")?;
@@ -223,21 +226,33 @@ pub fn call_method(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
                 )));
             }
         }
-        Ok((path, method, variant_to_json(&result), save))
+        // Capture runs after the save so a failed write does not leave a minted
+        // handle behind for a call that reports an error.
+        let mut capture = json!({});
+        crate::handles::apply_capture(args, &result, &mut capture)?;
+        Ok((path, method, variant_to_json(&result), save, capture))
     })();
 
-    let (path, method, result, save) = match prepared {
+    let (path, method, result, save, capture) = match prepared {
         Ok(v) => v,
         Err(e) => return HandlerOutcome::Done(Err(e)),
     };
 
+    let mut response = json!({ "path": path, "method": method, "result": result });
+    if let (Some(target), Some(extra)) = (response.as_object_mut(), capture.as_object()) {
+        target.extend(extra.iter().map(|(key, value)| (key.clone(), value.clone())));
+    }
+
     // A pure query changed no file, so there is nothing for the editor to
     // rescan and no reason to make the caller wait for one.
     if !save {
-        return HandlerOutcome::Done(Ok(json!({ "path": path, "method": method, "result": result, "saved": false })));
+        response["saved"] = json!(false);
+        return HandlerOutcome::Done(Ok(response));
     }
     trigger_rescan(false, ctx, move || {
-        Ok(json!({ "path": path, "method": method, "result": result, "saved": true }))
+        let mut response = response;
+        response["saved"] = json!(true);
+        Ok(response)
     })
 }
 

@@ -121,6 +121,12 @@ These produce dead ends rather than error messages you can act on:
 - `gd_script_create` does not compile-check. Run `gd_script_validate` before `gd_script_attach`.
 - Writing a shader is a resource property write (`gd_resource_set_property` on `Shader.code`); it does
   not compile-check either. Run `gd_shader_validate` after, the way you would `gd_script_validate`.
+- An object handle is per bridge process and per session. A handle from `gd_object` is spent on
+  `gd_node_*`; one from `gd_scene_object` is spent on `gd_scene_node_*`; neither crosses, and both
+  die with their process. Release what you finish with: the table holds 64 and refuses a 65th
+  rather than evicting one you still hold.
+- `capture` reads the returned value only, not inside it. An object nested in a returned array or
+  dictionary is still a string you cannot act on; find it another way.
 - `gd_play` runs what is on disk. `gd_scene_save` or `gd_scene_save_all` first, always.
 - Project-defined tools (`gd_project_` plus a method name) exist only while a game is
   connected, and disappear when it exits. Expect the tool list to change around `gd_play`.

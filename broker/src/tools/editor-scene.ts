@@ -85,9 +85,10 @@ export function registerEditorSceneTools(server: McpServer, manager: BridgeManag
     "gd_scene_node_get_property",
     "Read one property of a node in the edited scene or of an engine singleton, returned as plain JSON or a tagged Godot type. The edit-time counterpart of gd_node_get_property.",
     {
-      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings.").optional(),
+      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings, or 'object:<n>' for a handle held by gd_scene_object.").optional(),
       node_path: z.string().describe("Path relative to the edited scene root. Legacy alias for target; pass one or the other, not both.").optional(),
       property: z.string().describe("Property name to read."),
+      capture: z.boolean().describe("Take an object handle on the value, if it is an object, and report it as handle. Reaches objects no path names, such as an unsaved sub-resource.").optional(),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   );
@@ -96,7 +97,7 @@ export function registerEditorSceneTools(server: McpServer, manager: BridgeManag
     "gd_scene_node_set_property",
     "Set one property of a node in the edited scene, undo-wrapped, returning the previous value. Values may be plain JSON or tagged Godot types, including {__type: 'Resource', path: 'res://...'} for resource-valued properties like textures and shapes. A singleton target is written directly and reports undoable: false, because engine-global state does not belong on the scene's undo history.",
     {
-      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings.").optional(),
+      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings, or 'object:<n>' for a handle held by gd_scene_object.").optional(),
       node_path: z.string().describe("Path relative to the edited scene root. Legacy alias for target; pass one or the other, not both.").optional(),
       property: z.string().describe("Property name to write."),
       value: z.any().describe("New value; plain JSON or a tagged Godot type."),
@@ -108,10 +109,11 @@ export function registerEditorSceneTools(server: McpServer, manager: BridgeManag
     "gd_scene_node_call",
     "Call a method on an edited-scene node or an engine singleton and return its result. The edit-time counterpart of gd_node_call, reaching TileMapLayer.set_cell and NavigationRegion3D.bake_navigation_mesh. NOT undo-wrapped: a method call has no inverse, so gd_undo cannot revert it. Follow a mutating call with gd_scene_save.",
     {
-      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings.").optional(),
+      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings, or 'object:<n>' for a handle held by gd_scene_object.").optional(),
       node_path: z.string().describe("Path relative to the edited scene root. Legacy alias for target; pass one or the other, not both.").optional(),
       method: z.string().describe("Method name to call."),
-      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types.").optional(),
+      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types. An object handle is {\"__type\":\"Object\",\"handle\":\"object:3\"}.").optional(),
+      capture: z.boolean().describe("Take an object handle on the returned value, if it is an object, and report it as handle.").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   );

@@ -1325,3 +1325,114 @@ fallback" are the same state, and an op that erased the key would differ from
 one that wrote `en` only in the file, never in behaviour. `test` takes an empty
 string because the editor writes one there for "no override", which is a real
 value rather than an absence.
+
+## Phase 16: object handles
+
+### A dead handle is a lookup, never a dereference
+
+`Gd<T>` for a manually managed object is a raw pointer with no ownership, and
+gdext documents access to a dead object as safe but panicking "in a defined
+manner". A panic inside a handler is caught at the dispatcher boundary and
+returned as `internal_error`, which would be a true statement about the bridge
+and a useless one about the object.
+
+So `bridge/src/handles.rs` never dereferences the stored pointer. Each entry
+keeps an `InstanceId` and resolves through `Gd::<Object>::try_from_instance_id`,
+which returns `Result`, and keeps a strong `Gd<Object>` only when the object is
+`RefCounted` -- where holding it is what keeps the object alive. For a manually
+managed object the table deliberately holds no pointer at all, so there is
+nothing that could dangle. `list` reports `valid` from the same lookup, so a
+dead handle is visible before it is used and not only when it is.
+
+Measured against Godot 4.7.1 by the phase 16 runner: capturing a node, freeing
+it with `gd_tree_mutate free`, and calling through the handle two frames later
+answers `object_not_found` naming the class, and `list` shows `valid: false`.
+
+### create builds only RefCounted classes
+
+The restriction is what lets `release` promise it neither frees something out
+from under a caller nor leaks: for a `RefCounted` object the handle *is* the
+ownership, so dropping it is the whole of the cleanup.
+
+Freeing on release was considered and rejected. An agent can hand a constructed
+object to something that keeps it -- `TileSet.add_source` is exactly that, and
+the phase 16 runner does it -- so a release that freed would destroy a live
+sub-resource. Not freeing, on a manually managed object, leaks it for the life
+of the process instead. Refusing to construct one avoids the choice.
+
+The cost is close to zero. The manually managed members of this cluster are not
+instantiable anyway: `PhysicsDirectSpaceState3D`, `EditorSelection`, `TileData`
+and their kind are handed out by a call, which is what `capture` is for. Nodes
+have `gd_tree_mutate add_node` and `gd_node_add`, and the refusal names them.
+
+### The engine answers with its implementation class, not the documented one
+
+`World3D.direct_space_state` is documented as `PhysicsDirectSpaceState3D`. What
+`get_class()` returns is `GodotPhysicsDirectSpaceState3D`, the concrete
+implementation behind the abstract documented type. A handle reports the class
+the engine gives, so a caller matching an exact documented name would find
+nothing; the phase 16 runner asserts the documented name is a *substring*, and
+this is recorded because it is a trap for any check written against the class
+reference rather than against the running engine.
+
+### Capture is top-level only
+
+`capture: true` inspects the value the call returned and nothing inside it.
+Objects nested in a returned array or dictionary stay stringified, so
+`intersect_ray`'s `collider` reads as `Body3D:<StaticBody3D#27296531943>` and
+cannot be acted on without finding it again by path.
+
+This is a deliberate boundary rather than an oversight. `variant_to_json`
+recurses, and minting inside it would take handles on every object in every
+returned container -- including nodes that already have paths -- filling a
+64-entry table with entries nobody asked for. Closing this properly needs a way
+to say *which* nested value to capture, which is a path expression and a
+different design. Until then the honest answer is that the top level is what
+capture covers.
+
+### Handles grant no authority the target grammar did not already grant
+
+There is no flag on `gd_object` or `gd_scene_object`, and that is a decision
+rather than an omission. `gd_node_call target=singleton:OS method=execute` is
+reachable in a default deployment today, so the surface already permits calling
+arbitrary engine methods on engine objects; a handle changes which objects can
+be named, not what may be done to one. Both tools sit in the `object` group and
+`--tool-groups` subtracts them like any other.
+
+### A typed array used to report itself as empty
+
+Found by the phase 16 runner rather than reasoned about: `get_selected_nodes`
+on a captured `EditorSelection` returned `[]` while the editor's own selection
+was `["Player"]`.
+
+The cause is not selection and not handles. gdext's `Array<T>` checks its
+runtime element type on conversion (`with_checked_type`), so a `TypedArray<Node>`
+cannot become the untyped `Array<Variant>`; `variant_to_json` swallowed that
+error with `unwrap_or_default()` and returned an empty array. Every dynamic call
+returning a typed array -- `get_children`, `get_selected_nodes`, any
+`Array[String]` -- had been answering with a wrong value rather than an error,
+on both bridges, since the conversion was written.
+
+`variant_array_items` now falls back to reading through the Variant's own
+`size`/`get`, which is type-agnostic. The dictionary arm gets the same treatment
+for the same reason, since Godot 4.4 typed dictionaries fail the same check.
+
+`Variant::call` panics rather than erroring when a method does not exist or the
+arity does not match, so a fallback that guessed at signatures would trade a
+wrong answer for an `internal_error`. The signatures were checked against
+gdext's generated builtin method table rather than assumed: `Array.size()` and
+`Array.get(index)`, `Dictionary.keys()` and `Dictionary.get(key, default)` --
+`get` takes two required parameters there, not one with a default, which is why
+the call passes an explicit `Variant::nil()`. Only the array half has an
+acceptance check (`a_typed_array_reports_its_elements` in the phase 16 runner),
+because that is the half something in the surface was observed to hit; the
+dictionary half rests on the signature check alone.
+
+### Editor selection does survive a headless editor
+
+The phase-15 note warns that plugin paths touching a `Control` or a dock are
+unproven headless, and selection looked like that kind of path. Measured
+instead: `gd_editor_select` under `--headless --editor` sets the selection,
+`gd_editor_get_state` reads it back, and `EditorSelection.get_selected_nodes`
+through a captured handle agrees with both. The phase 16 runner asserts the
+third of those, so the runner needs no display and joins `ci:phases`.

@@ -410,6 +410,24 @@ fn tagged_to_variant(tag: &str, obj: &Map<String, Value>) -> Result<Variant, Bri
                 .map(|resource| resource.to_variant())
                 .ok_or_else(|| BridgeError::ResourceError(format!("failed to load resource '{path}'")))
         }
+        // A handle names an object this bridge process is already holding, so
+        // a value handed back by a capture feeds straight into the next call as
+        // an argument or a property value. Only `handle` is required; `class`
+        // rides along for readability and is not checked, because the handle
+        // table is the authority on what the object actually is.
+        "Object" => {
+            let handle = field(obj, tag, "handle")?;
+            let id = match handle {
+                Value::String(text) => crate::handles::parse_handle_id(text)?,
+                Value::Number(number) => number.as_u64().ok_or_else(|| {
+                    invalid("Object.handle must be a handle string or a positive integer")
+                })?,
+                _ => {
+                    return Err(invalid("Object.handle must be a handle string or a positive integer"))
+                }
+            };
+            Ok(crate::handles::resolve(id)?.to_variant())
+        }
         "Transform2D" => Ok(to_transform2d(&v)?.to_variant()),
         "Basis" => Ok(to_basis(&v)?.to_variant()),
         "Transform3D" => Ok(to_transform3d(&v)?.to_variant()),
@@ -502,14 +520,23 @@ pub fn variant_to_json(variant: &Variant) -> Value {
             json!({ TYPE_KEY: "Rect2i", "x": r.position.x, "y": r.position.y, "w": r.size.x, "h": r.size.y })
         }
         VariantType::ARRAY => {
-            let array = variant.try_to::<GArray<Variant>>().unwrap_or_default();
-            Value::Array(array.iter_shared().map(|item| variant_to_json(&item)).collect())
+            Value::Array(variant_array_items(variant).iter().map(variant_to_json).collect())
         }
         VariantType::DICTIONARY => {
-            let dict = variant.try_to::<Dictionary<Variant, Variant>>().unwrap_or_default();
             let mut map = Map::new();
-            for (key, item) in dict.iter_shared() {
-                map.insert(key.to_string(), variant_to_json(&item));
+            match variant.try_to::<Dictionary<Variant, Variant>>() {
+                Ok(dict) => {
+                    for (key, item) in dict.iter_shared() {
+                        map.insert(key.to_string(), variant_to_json(&item));
+                    }
+                }
+                // A typed Dictionary, for the reason variant_array_items gives.
+                Err(_) => {
+                    for key in variant_array_items(&variant.call("keys", &[])) {
+                        let item = variant.call("get", &[key.clone(), Variant::nil()]);
+                        map.insert(key.to_string(), variant_to_json(&item));
+                    }
+                }
             }
             Value::Object(map)
         }
@@ -568,6 +595,27 @@ pub fn variant_to_json(variant: &Variant) -> Value {
     }
 }
 
+/// The elements of an ARRAY variant, whether or not it carries an element type.
+///
+/// gdext refuses to convert a typed array (`Array[Node]`, `Array[String]`) into
+/// the untyped `Array<Variant>`: `with_checked_type` compares the runtime
+/// element type against the requested one and errors. Reading the elements
+/// through the Variant's own method table is type-agnostic, and it is the
+/// difference between reporting what is in the array and reporting `[]`, which
+/// is what an `unwrap_or_default()` on that error used to do -- a wrong answer
+/// rather than an error (`docs/api-gaps.md`). `size` and `get` exist on every
+/// Array, so the calls cannot fail the way `Variant::call` panics on.
+fn variant_array_items(variant: &Variant) -> Vec<Variant> {
+    if let Ok(array) = variant.try_to::<GArray<Variant>>() {
+        return array.iter_shared().collect();
+    }
+    if variant.get_type() != VariantType::ARRAY {
+        return Vec::new();
+    }
+    let length = variant.call("size", &[]).try_to::<i64>().unwrap_or(0).max(0);
+    (0..length).map(|index| variant.call("get", &[index.to_variant()])).collect()
+}
+
 pub(crate) fn vector2_json(v: Vector2) -> Value {
     json!({ TYPE_KEY: "Vector2", "x": v.x, "y": v.y })
 }
@@ -613,6 +661,24 @@ mod tests {
         assert_eq!(type_tag(&json!({ "x": 1 })), None);
         assert_eq!(type_tag(&json!([1, 2])), None);
         assert_eq!(type_tag(&json!("plain")), None);
+    }
+
+    #[test]
+    fn an_object_tag_needs_a_handle_and_rejects_a_malformed_one() {
+        // Engine-free: both of these fail while parsing the tagged form, before
+        // the handle table is consulted and long before a Variant exists.
+        let missing = json_to_variant(&json!({ "__type": "Object", "class": "SurfaceTool" })).unwrap_err();
+        assert_eq!(missing.code(), "invalid_args");
+        let malformed = json_to_variant(&json!({ "__type": "Object", "handle": "not-a-handle" })).unwrap_err();
+        assert_eq!(malformed.code(), "invalid_args");
+        let wrong_kind = json_to_variant(&json!({ "__type": "Object", "handle": [3] })).unwrap_err();
+        assert_eq!(wrong_kind.code(), "invalid_args");
+    }
+
+    #[test]
+    fn an_unminted_object_handle_is_object_not_found() {
+        let absent = json_to_variant(&json!({ "__type": "Object", "handle": "object:912345" })).unwrap_err();
+        assert_eq!(absent.code(), "object_not_found");
     }
 
     #[test]

@@ -29,14 +29,16 @@ pub fn get_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
                 spec.label()
             )));
         }
-        Ok(target_response(
+        let mut response = target_response(
             &spec,
             json!({
                 "property": property,
                 "type": variant_type_name(&value),
                 "value": variant_to_json(&value),
             }),
-        ))
+        );
+        crate::handles::apply_capture(args, &value, &mut response)?;
+        Ok(response)
     })())
 }
 

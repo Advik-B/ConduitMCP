@@ -10,6 +10,11 @@
 //! `node_path` still works and means exactly what it always did. `target` is
 //! additive, so no existing call, test, or eval snippet changes behaviour.
 //!
+//! Three schemes exist. A bare string is a node path; `singleton:<Class>` is an
+//! engine singleton; `object:<n>` is a live object held by handle in this
+//! bridge process (`crate::handles`), which is what reaches the objects that
+//! have no stable name at all.
+//!
 //! Parsing is engine-free and unit-tested here; resolution touches the engine
 //! and lives with the bridge that owns the tree (`runtime::support` walks the
 //! live `SceneTree`, `editor::support` walks the edited scene).
@@ -31,6 +36,10 @@ pub enum TargetSpec {
     Node(String),
     /// An engine singleton by class name, for example `OS` or `RenderingServer`.
     Singleton(String),
+    /// A live object held in this bridge process by handle (`crate::handles`).
+    /// The third scheme, and the one that reaches objects with no name at all:
+    /// `SurfaceTool`, `PhysicsDirectSpaceState3D`, an unsaved resource.
+    Object(u64),
 }
 
 impl TargetSpec {
@@ -39,6 +48,7 @@ impl TargetSpec {
         match self {
             TargetSpec::Node(path) => path.clone(),
             TargetSpec::Singleton(name) => format!("{SINGLETON_PREFIX}{name}"),
+            TargetSpec::Object(id) => crate::handles::format_handle(*id),
         }
     }
 }
@@ -47,6 +57,9 @@ impl TargetSpec {
 /// node path, which is what makes the grammar backward compatible: the old
 /// argument's values are a subset of the new argument's.
 pub fn parse_target(target: &str) -> Result<TargetSpec, BridgeError> {
+    if let Some(handle) = target.strip_prefix(crate::handles::HANDLE_PREFIX) {
+        return Ok(TargetSpec::Object(crate::handles::parse_handle_id(handle)?));
+    }
     if let Some(name) = target.strip_prefix(SINGLETON_PREFIX) {
         let name = name.trim();
         if name.is_empty() {
@@ -77,7 +90,7 @@ pub fn target_spec(args: &Value) -> Result<TargetSpec, BridgeError> {
         (Some(target), None) => parse_target(&target),
         (None, Some(path)) => Ok(TargetSpec::Node(path)),
         (None, None) => Err(BridgeError::InvalidArgs(
-            "'target' is required (a node path, or 'singleton:<Class>')".into(),
+            "'target' is required (a node path, 'singleton:<Class>', or 'object:<n>')".into(),
         )),
     }
 }
@@ -168,8 +181,23 @@ mod tests {
     }
 
     #[test]
+    fn the_object_scheme_carries_a_handle_id() {
+        assert_eq!(parse_target("object:3").unwrap(), TargetSpec::Object(3));
+        assert_eq!(parse_target("object: 12 ").unwrap(), TargetSpec::Object(12));
+        assert_eq!(parse_target("object:").unwrap_err().code(), "invalid_args");
+        assert_eq!(parse_target("object:nope").unwrap_err().code(), "invalid_args");
+    }
+
+    #[test]
+    fn an_object_target_reports_no_node_path() {
+        let value = target_response(&TargetSpec::Object(3), json!({ "method": "commit" }));
+        assert_eq!(value["target"], json!("object:3"));
+        assert!(value.get("node_path").is_none());
+    }
+
+    #[test]
     fn labels_round_trip_back_into_the_grammar() {
-        for text in ["/root/Main/Player", "singleton:OS"] {
+        for text in ["/root/Main/Player", "singleton:OS", "object:7"] {
             assert_eq!(parse_target(&parse_target(text).unwrap().label()).unwrap(), parse_target(text).unwrap());
         }
     }

@@ -29,6 +29,7 @@ export function registerEditorResourceTools(server: McpServer, manager: BridgeMa
       path: z.string().describe("res:// path to the resource."),
       op: z.enum(["get", "list"]).describe("get reads one property; list enumerates the property names (default get).").optional(),
       property: z.string().describe("Property name to read (op get).").optional(),
+      capture: z.boolean().describe("op get: take an object handle on the value, if it is an object, and report it as handle. Reaches sub-resources and other objects no res:// path names.").optional(),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     "await",
@@ -40,8 +41,9 @@ export function registerEditorResourceTools(server: McpServer, manager: BridgeMa
     {
       path: z.string().describe("res:// path to the resource."),
       method: z.string().describe("Method name to call."),
-      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types.").optional(),
+      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types. An object handle is {\"__type\":\"Object\",\"handle\":\"object:3\"}.").optional(),
       save: z.boolean().describe("Re-save the resource after the call (default true). Pass false for a pure query to skip the write and the filesystem rescan.").optional(),
+      capture: z.boolean().describe("Take an object handle on the returned value, if it is an object, and report it as handle. Reaches objects handed out by a resource, such as a TileSetAtlasSource.").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     "await",

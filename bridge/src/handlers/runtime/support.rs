@@ -42,11 +42,14 @@ pub fn resolve_node(path: &str) -> Result<Gd<Node>, BridgeError> {
 
 /// Resolve a target on the game bridge: a node by absolute scene path, or an
 /// engine singleton. The singleton arm is what makes `RenderingServer`, `OS`,
-/// `Time`, and every other server addressable without `gd_game_eval`.
+/// `Time`, and every other server addressable without `gd_game_eval`. The
+/// object arm resolves a handle held by this process (`crate::handles`), which
+/// is what reaches objects with no name at all.
 pub fn resolve_target(spec: &TargetSpec) -> Result<Gd<Object>, BridgeError> {
     match spec {
         TargetSpec::Node(path) => Ok(resolve_node(path)?.upcast()),
         TargetSpec::Singleton(name) => resolve_singleton(name),
+        TargetSpec::Object(id) => crate::handles::resolve(*id),
     }
 }
 
