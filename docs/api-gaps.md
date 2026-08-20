@@ -1244,3 +1244,84 @@ and the rest of the track API are reachable through `gd_resource_call` on both
 bridges, so it is a convenience gap in a dedicated tool rather than a capability
 gap in the surface. Phase 14's rule pass grades the animation-track headings on
 that basis.
+
+## Phase 15: editor plugins and translations
+
+### A headless editor does load an enabled plugin
+
+The expectation going in was that `EditorInterface.set_plugin_enabled` might be
+inert under `--headless --editor`, on the theory that an `EditorPlugin` is a
+`Node` added to editor UI that a headless session does not build. Measured
+instead against Godot 4.7.1: it loads the plugin and runs its `_enter_tree`
+synchronously, and `_exit_tree` on disable. The phase 15 runner proves it with
+a fixture plugin that appends a line to a marker file from each, and reads the
+file back from the host side.
+
+That is why the runner passes `render: false` to `godotCommand`, never calls
+`requireDisplay()`, and joins `ci:phases` alongside phases 13 and 14 rather
+than the local-only rendering tier. What would invalidate it is a plugin that
+touches a `Control` or a dock: those paths are not exercised here, and a
+fixture that built UI could fail headless while this one passes. The fixture is
+deliberately UI-free for that reason, not incidentally.
+
+### set_plugin_enabled reports nothing, so the flag is read back
+
+The method returns `void`. A plugin whose script fails to parse leaves the
+enabled set unchanged and reports the failure only to the editor log, so a
+handler that trusted its own argument would answer `enabled: true` for a plugin
+that never loaded. `bridge/src/handlers/editor/plugins.rs` calls
+`is_plugin_enabled` afterwards and turns a mismatch into a `resource_error`
+naming the likely cause.
+
+The acceptance draws the same distinction one level up: asserting
+`is_plugin_enabled` is true would pass while `_enter_tree` never ran, so
+`plugin_enable_loads_it` requires the marker file as well as the flag.
+
+### The enabled set is stored, but not under the key that names it
+
+`project.godot` is an INI file and a setting key splits at its first slash, so
+`editor_plugins/enabled` is written as `enabled=` under `[editor_plugins]` and
+`internationalization/locale/translations` as `locale/translations` under
+`[internationalization]`. The dotted key never appears in the file as written.
+
+This is recorded because it is a trap for acceptance checks rather than for the
+handlers: the first cut of the phase 15 runner grepped the file for the full
+key, which finds nothing whether or not the setting persisted -- a check that
+passes for the wrong reason on the way to failing for the wrong reason. The
+runner now parses the section and the key out of it, and reads a dictionary
+value to the next key rather than to the end of the line, because
+`locale/translation_remaps` spans several lines and a one-line read returns a
+bare `{`.
+
+### POT extraction has no scripted entry point
+
+`gd_translations` covers the four `internationalization/locale/*` settings the
+Localization tab writes. It does not generate a `.pot`, because the generator
+is `EditorNode`'s own `POTGenerator`, invoked from the Localization dialog's
+Generate POT button and exposed nowhere in `ClassDB`. `EditorTranslationParserPlugin`
+lets a project contribute *to* that generation; it does not let anything
+trigger it.
+
+Shipping `pot_add`/`pot_remove` over `internationalization/locale/translations_pot_files`
+was considered and rejected: it would manage the source list for a button
+nothing can press, which reads as a capability and is not one. This is the same
+judgment phase 14 made for `LightmapGI` baking. If a future Godot exposes the
+generator, the tool gains two ops and this note goes away.
+
+### set_locale cannot restore a locale to its engine default
+
+`internationalization/locale/fallback` has an engine default of `en`, and
+`gd_translations set_locale` writes over it but has no op that erases it: a
+blank `fallback` is rejected as a malformed locale rather than treated as
+"clear this". So an agent that sets a fallback can change it again but cannot
+put the key back in the state a fresh project has, short of
+`gd_project_set_setting` writing `en` explicitly.
+
+The asymmetry with `add`/`remove` is deliberate rather than an oversight. A
+translation list has a meaningful empty state and `remove` reaches it, so the
+setting can be erased outright. A fallback locale does not: every project has
+one whether or not `project.godot` names it, so "no fallback" and "the default
+fallback" are the same state, and an op that erased the key would differ from
+one that wrote `en` only in the file, never in behaviour. `test` takes an empty
+string because the editor writes one there for "no override", which is a real
+value rather than an absence.

@@ -296,9 +296,24 @@ because they are not judgment calls: the design says they exist and they do not.
 
 | Section 8 text | Status |
 |---|---|
-| "enable or disable editor plugins" | **Absent.** No tool; \`gd_project_set_setting\` can write \`editor_plugins/enabled\` blind. |
-| "and manage translations" | **Absent.** No translation tool; the CSV/PO pipeline is editor-menu driven. |
 | "process-mode control" (section 8, observation and debugging) | **Absent** as a dedicated tool; reachable as a node property. |
+
+"Enable or disable editor plugins" and "manage translations" left this table in
+phase 15, and with them the last two items section 8 named that no tool
+reached. \`gd_editor_plugin\` lists every \`res://addons\` directory holding a
+\`plugin.cfg\` and toggles one through \`EditorInterface.set_plugin_enabled\`,
+naming it by directory the way the engine does. \`gd_translations\` reads and
+writes the four \`internationalization/locale/*\` settings the Localization tab
+edits: the registered \`.translation\` list, the per-resource remap table, and
+the fallback and test locale. Neither is undo-wrapped, for the reason
+\`gd_autoload\` gives -- \`ProjectSettings::save()\` persists \`project.godot\`
+synchronously, so the edited scene's history never owned the change.
+
+Extracting strings into a POT template did not ship with it and is not an
+oversight. That is \`EditorNode\`'s own \`POTGenerator\`, driven from the
+Localization dialog, with no scripted entry point; a tool that managed the
+source list for a button nothing can press would look like a capability and not
+be one. It is graded accordingly rather than counted.
 
 "Create and read shaders and themes" and "shader creation gets the same
 log-derived compile diagnostics" left this table in phase 14, the first through
@@ -392,10 +407,24 @@ headings as unreachable actions, 42 of them prose about formatting and about
 porting GLSL. Correcting the rules took tutorial actions graded T2 or worse from
 504 to 314 without a single tool being added for them.
 
-### Next
-
 **Phase 15: editor plugin and translation management.** The two remaining
-section 8 items, both small.
+section 8 items, and with them the last of that parity target.
+\`gd_editor_plugin\` lists, enables, and disables addons under
+\`res://addons\`; \`gd_translations\` registers translations, remaps resources
+per locale, and sets the fallback and test locale. *Accepted* by
+\`bun run phase15\`, also with \`--disable-eval\`: a generated fixture plugin is
+enabled and disabled with its own \`_enter_tree\` and \`_exit_tree\` marker
+proving it actually loaded rather than merely being flagged, and a CSV imported
+to \`.translation\` resources is registered, remapped, and removed, each state
+read back out of \`project.godot\`.
+
+Two things were measured rather than assumed. A headless editor does run an
+enabled plugin's \`_enter_tree\`, so the runner needs no display and belongs in
+\`ci:phases\`; and \`EditorInterface.set_plugin_enabled\` reports nothing, so
+the handler reads the flag back to tell a refusal from a success. POT
+extraction stayed out for the reason given above (\`docs/api-gaps.md\`).
+
+### Next
 
 **Phase 16: object handles.** The last generic verb, and the only remaining
 class-reference cluster. Deliberately last: unlike the three resolvers, it needs

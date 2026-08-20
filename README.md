@@ -34,7 +34,7 @@ Nothing listens on the network, and the bridge refuses to activate in release bu
 
 ## What the agent can do
 
-91 tools, 86 exposed by default and the rest behind opt-in flags. The broad strokes:
+98 tools, 93 exposed by default and the rest behind opt-in flags. The broad strokes:
 
 - **Edit scenes the way the editor does**: open, create, and save scenes; add, remove, reparent, rename, and duplicate nodes; set properties with full Godot typing (vectors, colors, resources); attach and validate scripts; wire signals and groups; manage autoloads and the input map. Every mutation is undo-wrapped, so one `gd_undo` reverses it and the developer's undo history stays coherent.
 

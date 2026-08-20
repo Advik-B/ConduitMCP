@@ -83,7 +83,7 @@ reads none of these; in particular the broker never reads `GODOT_BIN`.
 
 ## Tool groups
 
-The default surface is 86 tools, which is a lot of context for a client that
+The default surface is 93 tools, which is a lot of context for a client that
 only needs some of it. `--tool-groups` slims it, in either of two forms:
 
 ```

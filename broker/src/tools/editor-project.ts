@@ -53,4 +53,31 @@ export function registerEditorProjectTools(server: McpServer, manager: BridgeMan
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   );
+
+  editorTool(
+    "gd_editor_plugin",
+    "Editor plugins under res://addons, selected by op: list (every addons subdirectory with a plugin.cfg, its metadata and enabled state), enable, or disable. plugin is the directory name, not a path. Writes editor_plugins/enabled in project.godot, not undo-wrapped; unlike gd_autoload it takes effect in the running editor at once.",
+    {
+      op: z.enum(["list", "enable", "disable"]).describe("Which plugin operation to perform."),
+      plugin: z.string().describe("Plugin directory name under res://addons (enable/disable).").optional(),
+    },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  );
+
+  editorTool(
+    "gd_translations",
+    "Project translations, selected by op: list (registered files, remaps, fallback and test locale), add or remove a .translation path, remap_add or remap_remove a per-locale resource variant, and set_locale (fallback, test, or both). Writes internationalization/locale/* in project.godot, not undo-wrapped. Extracting a POT template is an editor menu action with no API.",
+    {
+      op: z
+        .enum(["list", "add", "remove", "remap_add", "remap_remove", "set_locale"])
+        .describe("Which translation operation to perform."),
+      path: z.string().describe("res:// path of an imported .translation resource (add/remove).").optional(),
+      resource: z.string().describe("res:// path of the resource being remapped (remap_add/remap_remove).").optional(),
+      variant: z.string().describe("res:// path of the localised variant (remap_add).").optional(),
+      locale: z.string().describe("Locale code such as fr or pt_BR (remap_add/remap_remove).").optional(),
+      fallback: z.string().describe("set_locale: locale used when the requested one is missing.").optional(),
+      test: z.string().describe("set_locale: locale to preview with; empty string clears it.").optional(),
+    },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  );
 }

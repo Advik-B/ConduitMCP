@@ -416,6 +416,22 @@ export const T0_COVERAGE: CoverageRule[] = [
     side: "editor",
     note: "Writes input/* in project.godot; the editor's live InputMap is deliberately not reloaded (docs/api-gaps.md).",
   },
+  {
+    tool: "gd_editor_plugin",
+    ops: ["list", "enable", "disable"],
+    classes: ["EditorInterface"],
+    members: ["set_plugin_enabled", "is_plugin_enabled"],
+    side: "editor",
+    note: "The list op reads each addon's plugin.cfg through ConfigFile; EditorPlugin itself is authored in a project script, not driven from here.",
+  },
+  {
+    tool: "gd_translations",
+    ops: ["list", "add", "remove", "remap_add", "remap_remove", "set_locale"],
+    classes: ["ProjectSettings"],
+    members: [],
+    side: "editor",
+    note: "Settings-file-backed writes under internationalization/locale/*, which is what the Localization tab edits. POT extraction is EditorNode's own generator with no scripted entry point (docs/api-gaps.md).",
+  },
   { tool: "gd_asset_add", classes: ["EditorFileSystem"], members: ["scan", "get_filesystem", "update_file"], side: "editor" },
   { tool: "gd_asset_reimport", classes: ["EditorFileSystem"], members: ["reimport_files"], side: "editor" },
   {

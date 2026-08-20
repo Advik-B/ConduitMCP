@@ -62,6 +62,7 @@ const EXPECTED_TOOLS = [
   "gd_editor_launch",
   "gd_editor_list_dialogs",
   "gd_editor_open_script",
+  "gd_editor_plugin",
   "gd_editor_quit",
   "gd_editor_screenshot",
   "gd_editor_select",
@@ -131,6 +132,7 @@ const EXPECTED_TOOLS = [
   "gd_step_frames",
   "gd_stop",
   "gd_tilemap",
+  "gd_translations",
   "gd_tree_get",
   "gd_tree_mutate",
   "gd_undo",
@@ -163,9 +165,15 @@ describe("tool definitions", () => {
   // to a round number with headroom: the point of the bound is that adding a
   // tool has to be argued for, and headroom is what lets that argument be
   // skipped.
+  //
+  // Phase 15 moves it to 93, and the argument is that these are the last two:
+  // gd_editor_plugin and gd_translations close the final two items whitepaper
+  // section 8 names and the surface lacked. The ceiling again lands on the
+  // exact new count, so phase 16 has to make its own case rather than spend
+  // headroom this phase left behind.
   test("the tool surface stays within the revised section 7.1 budget", () => {
     expect(registrations.length).toBeGreaterThanOrEqual(40);
-    expect(registrations.length).toBeLessThanOrEqual(91);
+    expect(registrations.length).toBeLessThanOrEqual(93);
   });
 
   test("every tool name is gd_-prefixed and unique", () => {
@@ -277,6 +285,17 @@ describe("tool definitions", () => {
       const tool = registrations.find((r) => r.name === name);
       expect(tool?.config.annotations?.readOnlyHint).toBe(false);
       expect(tool?.config.annotations?.destructiveHint).toBe(true);
+    }
+  });
+
+  // Both carry a read-only list op, but both also write project.godot, and an
+  // annotation describes the tool rather than its cheapest op.
+  test("phase 15 project tools are annotated destructive and not open-world", () => {
+    for (const name of ["gd_editor_plugin", "gd_translations"]) {
+      const tool = registrations.find((r) => r.name === name);
+      expect(tool?.config.annotations?.readOnlyHint).toBe(false);
+      expect(tool?.config.annotations?.destructiveHint).toBe(true);
+      expect(tool?.config.annotations?.openWorldHint).toBe(false);
     }
   });
 

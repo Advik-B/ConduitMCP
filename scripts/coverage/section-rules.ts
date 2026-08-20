@@ -235,6 +235,40 @@ const T0_RULES: SectionRule[] = [
     via: "gd_autoload",
     match: ["autoload", "registering autoloads"],
   },
+  // Phase 15. These precede the T2 page rules below, so the headings they name
+  // are graded on the tool that reaches them while the rest of each page still
+  // falls through to the catch-all that describes what is genuinely left.
+  {
+    // Only headings that name the act of toggling. "plugin.cfg" is a filename
+    // rather than an action and appears throughout the authoring tutorials,
+    // which this tool does not reach; claiming those would overstate coverage
+    // in the one direction the T2 backstop below cannot correct.
+    id: "t0:plugin_toggle",
+    kind: "action",
+    tier: "T0",
+    via: "gd_editor_plugin",
+    pages: ["tutorials/plugins"],
+    match: ["enabling a plugin", "enable the plugin", "activating a plugin"],
+  },
+  {
+    // Deliberately not "importing translations" or "testing translations":
+    // both are already claimed by more specific rules above (the import
+    // pipeline, and gd_window's locale accessors), and both were already T0.
+    // Taking them would change the attribution without changing the grade.
+    id: "t0:translation_registration",
+    kind: "action",
+    tier: "T0",
+    via: "gd_translations",
+    match: [
+      "translation remap",
+      "resource remap",
+      "localizing resources",
+      "csv file as a translation",
+      "translating the project name",
+      "adding a translation",
+      "fallback locale",
+    ],
+  },
   {
     id: "t0:project_settings",
     kind: "action",
@@ -571,10 +605,17 @@ const T2_RULES: SectionRule[] = [
     match: ["renderingdevice", "compute pipeline"],
   },
   {
-    id: "t2:plugin_toggle",
+    // Narrowed in phase 15, in the sense that everything above it now catches
+    // the toggle. What is left on this page is authoring: subclassing
+    // EditorPlugin, EditorImportPlugin, EditorInspectorPlugin, and the gizmo
+    // and dock surfaces. Those are ordinary GDScript in a project file, which
+    // gd_script_create writes and t1:script_logic already grades, but the
+    // editor-side registration each one performs has no semantic verb, so the
+    // page keeps a T2 backstop rather than being declared reached.
+    id: "t2:plugin_authoring",
     kind: "action",
     tier: "T2",
-    via: "no plugin enable/disable tool, though whitepaper section 8 specifies one",
+    via: "gd_editor_plugin enables and disables; authoring a plugin is gd_asset_add for plugin.cfg plus gd_script_create for the EditorPlugin script, and its editor-side registration has no dedicated verb",
     pages: ["tutorials/plugins"],
     match: [""],
   },
@@ -654,10 +695,17 @@ const T2_RULES: SectionRule[] = [
     ],
   },
   {
+    // Narrowed in phase 15. Registering a translation, remapping a resource,
+    // and setting the fallback and test locale are gd_translations, and
+    // t0:translation_registration above takes those needles. What is left here
+    // is the gettext half: extraction into a POT template is EditorNode's own
+    // POTGenerator, reachable only from the Localization dialog, and the
+    // shaping and pluralisation headings are prose about the format rather
+    // than actions a tool performs.
     id: "t2:gettext",
     kind: "action",
     tier: "T2",
-    via: "no translation management tool; PO/POT generation is an editor menu action",
+    via: "gd_translations registers and remaps translations; extracting strings into a POT template is an editor menu action with no scripted entry point (docs/api-gaps.md)",
     match: [
       "gettext",
       "po file",
@@ -672,9 +720,7 @@ const T2_RULES: SectionRule[] = [
       "break iterator",
       "localizing",
       "placeholder",
-      "csv file as a translation",
       "converting keys to text",
-      "translating the project name",
     ],
   },
   {
@@ -875,10 +921,14 @@ const RESIDUE_RULES: SectionRule[] = [
     match: [""],
   },
   {
+    // The page-wide backstop, kept so nothing on tutorials/i18n falls through
+    // unclassified. The headings gd_translations reaches are taken by
+    // t0:translation_registration before this rule is consulted; what remains
+    // is the POT half and the text-shaping prose.
     id: "t2:i18n_page",
     kind: "action",
     tier: "T2",
-    via: "no translation management tool; the CSV/PO pipeline is editor-menu driven",
+    via: "gd_translations registers translations, remaps, and the fallback and test locale; POT extraction and the text-shaping tutorials have no semantic verb",
     pages: ["tutorials/i18n"],
     match: [""],
   },

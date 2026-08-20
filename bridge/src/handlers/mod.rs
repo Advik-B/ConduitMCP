@@ -65,6 +65,8 @@ impl HandlerRegistry {
         handlers.insert("gd_scene_find_nodes", editor::query::scene_find_nodes);
         handlers.insert("gd_autoload", editor::autoload::autoload);
         handlers.insert("gd_input_map", editor::input_map::input_map);
+        handlers.insert("gd_editor_plugin", editor::plugins::editor_plugin);
+        handlers.insert("gd_translations", editor::translations::translations);
         handlers.insert("gd_editor_eval", editor::eval::editor_eval);
         handlers.insert("gd_script_create", editor::script::create);
         handlers.insert("gd_script_attach", editor::script::attach);
@@ -298,6 +300,25 @@ mod tests {
         // tree, which is an edit-time concern; a running game has already
         // loaded whatever shaders it uses.
         assert!(!HandlerRegistry::game().tool_names().contains(&"gd_shader_validate"));
+    }
+
+    #[test]
+    fn editor_registry_includes_the_phase15_tools() {
+        let names = HandlerRegistry::editor().tool_names();
+        for tool in ["gd_editor_plugin", "gd_translations"] {
+            assert!(names.contains(&tool), "{tool} must be registered on the editor bridge");
+        }
+    }
+
+    #[test]
+    fn phase15_tools_stay_off_the_game_bridge() {
+        // Both write project.godot through the editor's ProjectSettings, and
+        // enabling a plugin loads it into the editor process. A running game
+        // has neither an EditorInterface nor a writable project.
+        let names = HandlerRegistry::game().tool_names();
+        for tool in ["gd_editor_plugin", "gd_translations"] {
+            assert!(!names.contains(&tool), "{tool} must not be registered on the game bridge");
+        }
     }
 
     #[test]

@@ -143,6 +143,8 @@ Not undo-wrapped: these write `project.godot` or act on editor state directly.
 | `gd_project_set_setting` | project | Writes one setting and saves `project.godot`. |
 | `gd_autoload` | project | Autoload singletons: `list`, `add`, `remove`. Applies to subsequently launched games. |
 | `gd_input_map` | project | Input actions and their bound events: `list`, `add_action`, `remove_action`, `add_event`, `remove_event`. Applies to subsequently launched games. |
+| `gd_editor_plugin` | project | Editor plugins under `res://addons`: `list`, `enable`, `disable`. `plugin` is the directory name, not a path. Takes effect in the running editor at once. |
+| `gd_translations` | project | Project translations: `list`, `add`, `remove`, `remap_add`, `remap_remove`, `set_locale`. Registers imported `.translation` files; POT extraction is an editor menu action with no API. |
 | `gd_undo` | state | Reverses the most recent undo-wrapped edit. Reports `performed: false` when there is nothing to undo. |
 | `gd_redo` | state | Reapplies the most recently undone edit. |
 | `gd_editor_get_state` | state | Open scenes and their dirty flags, current scene, selection, and whether a game is playing. |

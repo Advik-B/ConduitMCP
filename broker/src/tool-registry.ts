@@ -136,6 +136,8 @@ export const TOOL_GROUP_BY_NAME: Record<string, ToolGroup> = {
   gd_project_set_setting: "project",
   gd_autoload: "project",
   gd_input_map: "project",
+  gd_editor_plugin: "project",
+  gd_translations: "project",
 
   gd_undo: "state",
   gd_redo: "state",

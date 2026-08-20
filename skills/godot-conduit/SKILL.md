@@ -114,8 +114,10 @@ These produce dead ends rather than error messages you can act on:
   proof there is an engine, so rule that out before downloading one.
 - `gd_addon_install` is refused while an editor is connected, because Godot binds a GDExtension
   only at startup. Quit, install, relaunch.
-- `gd_autoload` and `gd_input_map` write `project.godot`. They apply to *subsequently launched*
-  games, not to the running editor or a live game.
+- `gd_autoload`, `gd_input_map`, and `gd_translations` write `project.godot`. They apply to
+  *subsequently launched* games, not to the running editor or a live game. `gd_editor_plugin`
+  writes `project.godot` too but is the exception: enabling loads the plugin into the running
+  editor at once.
 - `gd_script_create` does not compile-check. Run `gd_script_validate` before `gd_script_attach`.
 - Writing a shader is a resource property write (`gd_resource_set_property` on `Shader.code`); it does
   not compile-check either. Run `gd_shader_validate` after, the way you would `gd_script_validate`.
