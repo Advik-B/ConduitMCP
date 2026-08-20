@@ -145,7 +145,7 @@ and therefore reaches everything. Reachability is graded instead:
 | Tier | Meaning | Counts as a gap? |
 |---|---|---|
 | **T0** | A dedicated tool performs the action | no |
-| **T1** | A generic reflection tool reaches it (\`gd_node_call\`, \`gd_node_set_property\`, \`gd_scene_node_set_property\`, \`gd_resource_set_property\`, \`gd_signal\`) | no |
+| **T1** | A generic reflection tool reaches it (\`gd_node_call\`, \`gd_node_set_property\`, \`gd_scene_node_set_property\`, \`gd_resource_set_property\`, \`gd_signal\`, \`gd_scene_signal\`) | no |
 | **T2** | Only evaluation reaches it (\`gd_game_eval\`, \`gd_editor_eval\`) | **yes** |
 | **T3** | Only tier-2 editor control-tree driving reaches it (\`gd_editor_ui\`) | **yes** |
 | **T4** | Only pixels reach it (\`gd_editor_pixel_*\`) | **yes** |

@@ -1,8 +1,18 @@
 //! Persisted signal connections and persistent node groups on the edited
-//! scene (whitepaper section 8 "Scene structure"). Connections always carry
-//! CONNECT_PERSIST so they serialize on save; both mutations are undo-wrapped
-//! through dynamic varcalls on the undo manager, the same idiom the node
-//! handlers use for add_child/set_owner.
+//! scene (whitepaper section 8 "Scene structure").
+//!
+//! A connection between two nodes of the edited scene carries CONNECT_PERSIST
+//! so it serializes on save, and is undo-wrapped through dynamic varcalls on
+//! the undo manager, the same idiom the node handlers use for
+//! add_child/set_owner.
+//!
+//! A connection with a singleton or a handle-held object at either end is
+//! neither. A persisted connection serializes both ends, so there is no scene
+//! file for this one to go into, and the edited scene's history does not own
+//! it; it is made live, without PERSIST, and the response says
+//! `persisted: false, undoable: false` rather than letting `gd_undo` claim to
+//! revert something it never held. That is the argument `gd_scene_node_call`
+//! and the singleton property write already make.
 
 use godot::builtin::StringName;
 use godot::classes::Node;
@@ -11,7 +21,11 @@ use serde_json::{json, Value};
 
 use crate::dispatcher::{FrameContext, HandlerOutcome};
 use crate::handlers::args::{optional_bool, optional_str, require_str};
-use crate::handlers::editor::support::{edited_scene_root, relative_path, resolve_editor_node, undo_redo};
+use crate::handlers::editor::support::{
+    edited_scene_root, relative_path, resolve_editor_node, resolve_editor_target, undo_redo,
+};
+use crate::handlers::signals as core;
+use crate::handlers::target::{target_response, target_spec, target_spec_named, TargetSpec};
 use crate::protocol::BridgeError;
 
 // ConnectFlags: CONNECT_DEFERRED and CONNECT_PERSIST.
@@ -22,18 +36,21 @@ fn call_error(action: &str, err: godot::meta::error::CallError) -> BridgeError {
     BridgeError::Internal(format!("{action} failed: {err}"))
 }
 
-pub fn scene_signal(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
-    HandlerOutcome::Done((|| {
-        let op = require_str(args, "op")?;
-        match op.as_str() {
-            "connect" => connect(args),
-            "disconnect" => disconnect(args),
-            "list" => list(args),
-            other => Err(BridgeError::InvalidArgs(format!(
-                "unknown signal op '{other}'; expected connect, disconnect, or list"
-            ))),
-        }
-    })())
+pub fn scene_signal(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
+    let op = match require_str(args, "op") {
+        Ok(op) => op,
+        Err(err) => return HandlerOutcome::Done(Err(err)),
+    };
+    match op.as_str() {
+        "connect" => HandlerOutcome::Done(connect(args)),
+        "disconnect" => HandlerOutcome::Done(disconnect(args)),
+        "emit" => HandlerOutcome::Done(emit(args)),
+        "list" => HandlerOutcome::Done(list(args)),
+        "await" => await_signal(args, ctx),
+        other => HandlerOutcome::Done(Err(BridgeError::InvalidArgs(format!(
+            "unknown signal op '{other}'; expected connect, disconnect, emit, list, or await"
+        )))),
+    }
 }
 
 /// A persisted connection's row in `get_signal_connection_list`, decoded to
@@ -71,27 +88,68 @@ fn persisted_connections(node: &Gd<Node>, signal_filter: Option<&str>) -> Vec<Co
     connections
 }
 
+/// One end of a persisted connection: a node of the edited scene, and the path
+/// the caller named it by.
+struct NodeEnd {
+    spec: TargetSpec,
+    node: Gd<Node>,
+}
+
+/// The node of the edited scene a spec names, or `None` when it names
+/// something else. Only a node-to-node connection can be persisted, so this is
+/// what decides which of the two connect paths a call takes.
+fn edited_node(spec: &TargetSpec) -> Result<Option<NodeEnd>, BridgeError> {
+    match spec {
+        TargetSpec::Node(path) => {
+            Ok(Some(NodeEnd { spec: spec.clone(), node: resolve_editor_node(path)? }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Resolve a spec into the endpoint pair the shared signal core takes.
+fn endpoint(spec: &TargetSpec) -> Result<core::Endpoint, BridgeError> {
+    Ok(core::Endpoint { object: resolve_editor_target(spec)?, spec: spec.clone() })
+}
+
 fn connect(args: &Value) -> Result<Value, BridgeError> {
-    let node_path = require_str(args, "node_path")?;
+    let source_spec = target_spec(args)?;
+    let receiver_spec = target_spec_named(args, "receiver", "target_path")?;
     let signal = require_str(args, "signal")?;
-    let target_path = require_str(args, "target_path")?;
     let method = require_str(args, "method")?;
     let deferred = optional_bool(args, "deferred").unwrap_or(false);
 
-    let source = resolve_editor_node(&node_path)?;
-    let target = resolve_editor_node(&target_path)?;
-    if !source.has_signal(signal.as_str()) {
-        return Err(BridgeError::InvalidArgs(format!("node '{node_path}' has no signal '{signal}'")));
+    match (edited_node(&source_spec)?, edited_node(&receiver_spec)?) {
+        (Some(source), Some(receiver)) => connect_persisted(source, receiver, &signal, &method, deferred),
+        _ => connect_live(&source_spec, &receiver_spec, &signal, &method, deferred),
     }
-    let callable = Callable::from_object_method(&target, method.as_str());
-    if source.is_connected(signal.as_str(), &callable) {
+}
+
+/// Two nodes of the edited scene: CONNECT_PERSIST, undo-wrapped, saved with the
+/// scene. Unchanged from before the target grammar reached this tool.
+fn connect_persisted(
+    source_end: NodeEnd,
+    receiver_end: NodeEnd,
+    signal: &str,
+    method: &str,
+    deferred: bool,
+) -> Result<Value, BridgeError> {
+    let (source, target) = (source_end.node, receiver_end.node);
+    let (source_spec, receiver_spec) = (source_end.spec, receiver_end.spec);
+    let source_label = source_spec.label();
+    let receiver_label = receiver_spec.label();
+    if !source.has_signal(signal) {
+        return Err(BridgeError::InvalidArgs(format!("node '{source_label}' has no signal '{signal}'")));
+    }
+    let callable = Callable::from_object_method(&target, method);
+    if source.is_connected(signal, &callable) {
         return Err(BridgeError::AlreadyExists(format!(
-            "{node_path}.{signal} is already connected to {target_path}.{method}"
+            "{source_label}.{signal} is already connected to {receiver_label}.{method}"
         )));
     }
 
     let flags = CONNECT_PERSIST | if deferred { CONNECT_DEFERRED } else { 0 };
-    let signal_name = StringName::from(signal.as_str());
+    let signal_name = StringName::from(signal);
     let mut ur = undo_redo()?;
     let action_name = format!("Conduit: Connect {signal} to {method}");
     ur.create_action(action_name.as_str());
@@ -101,37 +159,86 @@ fn connect(args: &Value) -> Result<Value, BridgeError> {
         .map_err(|e| call_error("add_undo_method(disconnect)", e))?;
     ur.commit_action();
 
-    let mut result = json!({
-        "connected": true,
-        "signal": signal,
-        "target_path": target_path,
-        "method": method,
-        "flags": flags,
-        "action_name": action_name,
-    });
+    let mut result = target_response(
+        &source_spec,
+        json!({
+            "connected": true,
+            "signal": signal,
+            "receiver": receiver_label,
+            "target_path": receiver_label,
+            "method": method,
+            "flags": flags,
+            "persisted": true,
+            "undoable": true,
+            "action_name": action_name,
+        }),
+    );
     // Wiring before writing the handler is a legitimate order of operations
     // (Godot's own connect dialog allows it), so a missing method is a note,
     // not an error.
-    if !target.has_method(method.as_str()) {
-        result["note"] = json!(format!("target '{target_path}' does not yet have a method '{method}'"));
+    if !target.has_method(method) {
+        result["note"] = json!(format!("target '{receiver_label}' does not yet have a method '{method}'"));
+    }
+    Ok(result)
+}
+
+/// Anything else -- a singleton or a handle-held object at either end -- is a
+/// live connection in the editor process, gone when the editor exits. A
+/// persisted connection serializes both ends into the scene file, so one end
+/// outside the edited scene is enough to make persistence impossible. Reported
+/// as unpersisted and un-undoable rather than pretending.
+fn connect_live(
+    source_spec: &TargetSpec,
+    receiver_spec: &TargetSpec,
+    signal: &str,
+    method: &str,
+    deferred: bool,
+) -> Result<Value, BridgeError> {
+    let mut source = endpoint(source_spec)?;
+    let receiver = endpoint(receiver_spec)?;
+    let flags = if deferred { CONNECT_DEFERRED as u32 } else { 0 };
+    core::connect_signal(&mut source, signal, &receiver, method, flags)?;
+
+    let receiver_label = receiver.label();
+    let mut result = target_response(
+        source_spec,
+        json!({
+            "connected": true,
+            "signal": signal,
+            "receiver": receiver_label,
+            "method": method,
+            "flags": flags,
+            "persisted": false,
+            "undoable": false,
+            "note": "one end is not a node of the edited scene, so the connection is live in the editor process only: it is not saved with the scene and gd_undo does not revert it",
+        }),
+    );
+    if !receiver.object.has_method(method) {
+        result["method_note"] =
+            json!(format!("receiver '{receiver_label}' does not yet have a method '{method}'"));
     }
     Ok(result)
 }
 
 fn disconnect(args: &Value) -> Result<Value, BridgeError> {
-    let node_path = require_str(args, "node_path")?;
+    let source_spec = target_spec(args)?;
+    let receiver_spec = target_spec_named(args, "receiver", "target_path")?;
     let signal = require_str(args, "signal")?;
-    let target_path = require_str(args, "target_path")?;
     let method = require_str(args, "method")?;
 
-    let source = resolve_editor_node(&node_path)?;
-    let target = resolve_editor_node(&target_path)?;
+    let (source, target) = match (edited_node(&source_spec)?, edited_node(&receiver_spec)?) {
+        (Some(source), Some(receiver)) => (source.node, receiver.node),
+        _ => return disconnect_live(&source_spec, &receiver_spec, &signal, &method),
+    };
+
+    let source_label = source_spec.label();
+    let receiver_label = receiver_spec.label();
     let existing = persisted_connections(&source, Some(signal.as_str()))
         .into_iter()
         .find(|c| c.method == method && c.target.as_ref() == Some(&target))
         .ok_or_else(|| {
             BridgeError::InvalidArgs(format!(
-                "{node_path}.{signal} has no persisted connection to {target_path}.{method}"
+                "{source_label}.{signal} has no persisted connection to {receiver_label}.{method}"
             ))
         })?;
 
@@ -150,15 +257,58 @@ fn disconnect(args: &Value) -> Result<Value, BridgeError> {
     .map_err(|e| call_error("add_undo_method(connect)", e))?;
     ur.commit_action();
 
-    Ok(json!({ "disconnected": true, "signal": signal, "action_name": action_name }))
+    Ok(target_response(
+        &source_spec,
+        json!({
+            "disconnected": true,
+            "signal": signal,
+            "persisted": true,
+            "undoable": true,
+            "action_name": action_name,
+        }),
+    ))
 }
 
-fn list(args: &Value) -> Result<Value, BridgeError> {
-    let node_path = require_str(args, "node_path")?;
-    let signal_filter = optional_str(args, "signal");
-    let node = resolve_editor_node(&node_path)?;
-    let root = edited_scene_root()?;
+fn disconnect_live(
+    source_spec: &TargetSpec,
+    receiver_spec: &TargetSpec,
+    signal: &str,
+    method: &str,
+) -> Result<Value, BridgeError> {
+    let mut source = endpoint(source_spec)?;
+    let receiver = endpoint(receiver_spec)?;
+    core::disconnect_signal(&mut source, signal, &receiver, method)?;
+    Ok(target_response(
+        source_spec,
+        json!({
+            "disconnected": true,
+            "signal": signal,
+            "receiver": receiver.label(),
+            "method": method,
+            "persisted": false,
+            "undoable": false,
+        }),
+    ))
+}
 
+/// A node of the edited scene reports its *persisted* connections, which is
+/// what the Node dock shows and what a save writes. Anything else has no
+/// persisted connections to report, so it reports its declared signals with
+/// their live connection counts instead, the way `gd_signal list` does.
+fn list(args: &Value) -> Result<Value, BridgeError> {
+    let spec = target_spec(args)?;
+    let signal_filter = optional_str(args, "signal");
+
+    let Some(end) = edited_node(&spec)? else {
+        let object = resolve_editor_target(&spec)?;
+        return Ok(target_response(
+            &spec,
+            json!({ "signals": core::list_signals(&object, signal_filter.as_deref()) }),
+        ));
+    };
+    let node = end.node;
+
+    let root = edited_scene_root()?;
     let connections: Vec<Value> = persisted_connections(&node, signal_filter.as_deref())
         .into_iter()
         .map(|c| {
@@ -170,7 +320,37 @@ fn list(args: &Value) -> Result<Value, BridgeError> {
             })
         })
         .collect();
-    Ok(json!({ "node_path": node_path, "connections": connections }))
+    Ok(target_response(
+        &spec,
+        json!({
+            "connections": connections,
+            "signals": core::list_signals(&node.clone().upcast(), signal_filter.as_deref()),
+        }),
+    ))
+}
+
+fn emit(args: &Value) -> Result<Value, BridgeError> {
+    let spec = target_spec(args)?;
+    let signal = require_str(args, "signal")?;
+    let mut object = resolve_editor_target(&spec)?;
+    core::emit_signal(&mut object, &signal, &spec.label(), args)?;
+    Ok(target_response(&spec, json!({ "emitted": true, "signal": signal, "undoable": false })))
+}
+
+fn await_signal(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
+    let spec = match target_spec(args) {
+        Ok(spec) => spec,
+        Err(err) => return HandlerOutcome::Done(Err(err)),
+    };
+    let signal = match require_str(args, "signal") {
+        Ok(value) => value,
+        Err(err) => return HandlerOutcome::Done(Err(err)),
+    };
+    let object = match resolve_editor_target(&spec) {
+        Ok(object) => object,
+        Err(err) => return HandlerOutcome::Done(Err(err)),
+    };
+    core::await_signal(object, &signal, &spec, ctx)
 }
 
 pub fn node_group(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
@@ -263,7 +443,7 @@ mod tests {
     #[test]
     fn scene_signal_requires_op_and_rejects_unknown_ops() {
         assert_invalid_args(scene_signal(&json!({}), &ctx()));
-        assert_invalid_args(scene_signal(&json!({ "op": "emit" }), &ctx()));
+        assert_invalid_args(scene_signal(&json!({ "op": "subscribe" }), &ctx()));
     }
 
     #[test]
@@ -274,6 +454,31 @@ mod tests {
             &json!({ "op": "connect", "node_path": "Timer", "signal": "timeout", "target_path": "." }),
             &ctx(),
         ));
+    }
+
+    #[test]
+    fn a_conflicting_endpoint_pair_is_rejected() {
+        assert_invalid_args(scene_signal(
+            &json!({ "op": "connect", "node_path": "Timer", "target": "singleton:EditorInterface" }),
+            &ctx(),
+        ));
+        assert_invalid_args(scene_signal(
+            &json!({
+                "op": "connect",
+                "node_path": "Timer",
+                "signal": "timeout",
+                "method": "on_timeout",
+                "target_path": ".",
+                "receiver": "object:1",
+            }),
+            &ctx(),
+        ));
+    }
+
+    #[test]
+    fn await_requires_a_target_and_a_signal() {
+        assert_invalid_args(scene_signal(&json!({ "op": "await" }), &ctx()));
+        assert_invalid_args(scene_signal(&json!({ "op": "await", "target": "object:1" }), &ctx()));
     }
 
     #[test]

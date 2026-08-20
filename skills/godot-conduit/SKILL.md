@@ -40,7 +40,7 @@ game, and a runtime write does not persist.
 | Write a property | `gd_scene_node_set_property` | `gd_node_set_property` |
 | Change structure | `gd_node_add`, `gd_node_remove`, `gd_node_rename`, `gd_node_reparent`, `gd_node_duplicate`, `gd_scene_instantiate` | `gd_tree_mutate` (ops `add_node`, `instantiate`, `free`, `reparent`, `change_scene`) |
 | Call a method | no equivalent; use a property or a script | `gd_node_call` |
-| Signals | `gd_scene_signal` (persisted, saves with the scene) | `gd_signal` (live connect, emit, await) |
+| Signals | `gd_scene_signal` (node-to-node connects persist and save with the scene) | `gd_signal` (live connect, emit, await) |
 | Groups | `gd_node_group` (persisted) | `gd_find_nodes` with `group` |
 
 Two traps in that table:

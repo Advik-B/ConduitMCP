@@ -58,7 +58,7 @@ diagnosable and completable.
 | `gd_node_get_property` | game | Reads one live property. |
 | `gd_node_set_property` | game | Writes one live property, returning the previous value. |
 | `gd_node_call` | game | Calls a method on a live node. |
-| `gd_signal` | game | Live signals: `connect`, `disconnect`, `emit`, `list`, `await`. |
+| `gd_signal` | game | Live signals on any target: `connect`, `disconnect`, `emit`, `list`, `await`. `target` names the emitter, `receiver` the connection destination; `await` returns every argument the signal carried. |
 | `gd_input` | game | Simulated input by `device`: key, action, mouse button and motion, joypad button and axis, touch, drag, magnify, pan. |
 | `gd_screenshot` | game | The game's rendered frame, as an image block. `not_available_headless` under `--headless`. |
 | `gd_perf` | game | Framerate, frame time, memory, object, node, and draw-call counts. |
@@ -117,7 +117,7 @@ the human's undo stack stays coherent. Paths are relative to the edited scene ro
 | `gd_node_duplicate` | scene | Duplicates a node and its subtree as a sibling. |
 | `gd_scene_save` | scene | Saves the active scene, or saves-as to a path. |
 | `gd_scene_save_all` | scene | Saves every open scene. |
-| `gd_scene_signal` | wiring | Persisted connections: `connect`, `disconnect`, `list`. Always `CONNECT_PERSIST`, so they serialise on save. The target method need not exist yet. |
+| `gd_scene_signal` | wiring | Signals at edit time: `connect`, `disconnect`, `emit`, `list`, `await`. A node-to-node connect is `CONNECT_PERSIST` and serialises on save, and the target method need not exist yet; a `singleton:` or `object:` source connects live and reports `persisted: false`. |
 | `gd_node_group` | wiring | Persistent groups: `add`, `remove`, `list`. |
 
 ## Scripts and resources (script, resource)
@@ -207,10 +207,11 @@ one: `create` builds a `RefCounted` class by name, and `capture: true` on
 `gd_scene_node_get_property`, `gd_resource_call`, or
 `gd_resource_get_property` takes one on the value that came back.
 
-Spend it two ways: as `target: "object:3"` on those same verbs, or as
-`{"__type": "Object", "handle": "object:3"}` in an `args` array or a property
-value. Only the top-level returned value is captured; objects nested inside a
-returned array or dictionary are not.
+Spend it two ways: as `target: "object:3"` on those same verbs -- and on
+`gd_signal` and `gd_scene_signal`, which is how you await a signal on an object
+no path names -- or as `{"__type": "Object", "handle": "object:3"}` in an `args`
+array or a property value. Only the top-level returned value is captured;
+objects nested inside a returned array or dictionary are not.
 
 `create` refuses a Node (use `gd_tree_mutate add_node` or `gd_node_add`) and
 refuses a non-`RefCounted` class, because a handle could not own it. Those are

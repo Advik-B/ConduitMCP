@@ -20,6 +20,7 @@ pub mod editor;
 pub mod node_query;
 pub mod objects;
 pub mod runtime;
+pub mod signals;
 pub mod target;
 
 type HandlerFn = fn(&Value, &FrameContext) -> HandlerOutcome;

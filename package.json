@@ -11,7 +11,7 @@
     "pack:npm": "bun scripts/pack-npm.ts",
     "coverage": "bun scripts/coverage/report.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p broker",
-    "ci:phases": "bun run handshake && bun run stress && bun run phase3 && bun run phase4 && bun run phase7 && bun run phase8 && bun run phase9 && bun run phase10 && bun run phase13 && bun run phase14 && bun run phase15 && bun run phase16 && bun run addon && bun run engine",
+    "ci:phases": "bun run handshake && bun run stress && bun run phase3 && bun run phase4 && bun run phase7 && bun run phase8 && bun run phase9 && bun run phase10 && bun run phase13 && bun run phase14 && bun run phase15 && bun run phase16 && bun run phase17 && bun run addon && bun run engine",
     "handshake": "bun tests/evals/startup_handshake.ts",
     "addon": "bun tests/evals/addon_install.ts",
     "engine": "bun tests/evals/engine_install.ts",
@@ -28,7 +28,8 @@
     "phase13": "bun tests/evals/phase13_import.ts",
     "phase14": "bun tests/evals/phase14_shader.ts",
     "phase15": "bun tests/evals/phase15_plugins_i18n.ts",
-    "phase16": "bun tests/evals/phase16_objects.ts"
+    "phase16": "bun tests/evals/phase16_objects.ts",
+    "phase17": "bun tests/evals/phase17_signals.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

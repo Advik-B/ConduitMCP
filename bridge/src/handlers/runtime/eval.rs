@@ -52,7 +52,12 @@ pub fn game_eval(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
 }
 
 /// Compile and start a snippet, returning a pending op unless it fails to
-/// compile. Shared by `gd_game_eval` and the signal-await path.
+/// compile. Shared by `gd_game_eval` and `gd_editor_eval`.
+///
+/// `gd_signal await` used to come through here too, which meant a deployment
+/// that passed `--disable-eval` still compiled GDScript on this path. It now
+/// connects a native callable instead (`crate::handlers::signals`); nothing
+/// outside the two eval tools should reach this function again.
 pub fn run_source(source: &str, ctx: &FrameContext) -> HandlerOutcome {
     if source.trim().is_empty() {
         return HandlerOutcome::Done(Err(BridgeError::InvalidArgs("'source' must not be empty".into())));

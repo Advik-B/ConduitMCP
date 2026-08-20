@@ -81,17 +81,32 @@ pub fn parse_target(target: &str) -> Result<TargetSpec, BridgeError> {
 /// disagree, and a call that means two different things is a bug the agent
 /// should hear about immediately.
 pub fn target_spec(args: &Value) -> Result<TargetSpec, BridgeError> {
-    let target = optional_str(args, "target");
-    let node_path = optional_str(args, "node_path");
-    match (target, node_path) {
-        (Some(_), Some(_)) => Err(BridgeError::InvalidArgs(
-            "pass either 'target' or 'node_path', not both".into(),
-        )),
+    target_spec_named(args, "target", "node_path")
+}
+
+/// The same rule for a tool that names a second object in different fields.
+///
+/// `gd_signal` is the case: it already called the emitter `node_path` and the
+/// connection destination `target_path`, so the destination's grammar field
+/// cannot also be called `target`. Parameterising the pair keeps one
+/// implementation of the both-supplied rejection instead of a second copy that
+/// would drift.
+pub fn target_spec_named(
+    args: &Value,
+    grammar_field: &str,
+    path_field: &str,
+) -> Result<TargetSpec, BridgeError> {
+    let target = optional_str(args, grammar_field);
+    let path = optional_str(args, path_field);
+    match (target, path) {
+        (Some(_), Some(_)) => Err(BridgeError::InvalidArgs(format!(
+            "pass either '{grammar_field}' or '{path_field}', not both"
+        ))),
         (Some(target), None) => parse_target(&target),
         (None, Some(path)) => Ok(TargetSpec::Node(path)),
-        (None, None) => Err(BridgeError::InvalidArgs(
-            "'target' is required (a node path, 'singleton:<Class>', or 'object:<n>')".into(),
-        )),
+        (None, None) => Err(BridgeError::InvalidArgs(format!(
+            "'{grammar_field}' is required (a node path, 'singleton:<Class>', or 'object:<n>')"
+        ))),
     }
 }
 
@@ -168,6 +183,23 @@ mod tests {
         assert_eq!(target_spec(&both).unwrap_err().code(), "invalid_args");
         let neither = json!({ "method": "get_name" });
         assert_eq!(target_spec(&neither).unwrap_err().code(), "invalid_args");
+    }
+
+    #[test]
+    fn a_named_field_pair_reports_its_own_field_names() {
+        let both = json!({ "receiver": "object:3", "target_path": "/root/Main" });
+        let err = target_spec_named(&both, "receiver", "target_path").unwrap_err();
+        assert_eq!(err.code(), "invalid_args");
+        assert!(err.to_string().contains("'receiver'"), "{err}");
+        assert!(err.to_string().contains("'target_path'"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_named_target_names_the_field_it_wanted() {
+        let args = json!({ "signal": "timeout" });
+        let err = target_spec_named(&args, "receiver", "target_path").unwrap_err();
+        assert_eq!(err.code(), "invalid_args");
+        assert!(err.to_string().contains("'receiver'"), "{err}");
     }
 
     #[test]

@@ -177,11 +177,28 @@ visible in the recording without any UI driving.
 
 ## gd_signal await
 
-The `await` op is implemented by delegating to the evaluation runner with a
-generated `return await Signal(get_node(path), signal)` snippet. Awaiting a
-signal yields its first argument, and the wait is bounded by the broker's
-per-request timeout rather than an in-snippet timeout. Connect, disconnect,
-emit, and list are direct synchronous calls.
+Phase 17 replaced the implementation. The note is kept rather than deleted
+because the response still carries the keys the old shape defined, and because
+what it said about them was not quite right.
+
+`await` used to delegate to the evaluation runner with a generated
+`return await Signal(get_node(path), signal)` snippet. It is now a native
+connection: a `Callable::from_fn` writes the emitted arguments into a cell and a
+`PendingOp` settles on the next frame (`bridge/src/handlers/signals.rs`).
+
+The response gained `args`, the unambiguous full argument list, and kept `value`
+and `type`. `value` reproduces what GDScript `await` yields rather than the
+first argument: nothing for a zero-argument signal, the argument itself for one,
+and an **array** for more than one. The earlier note here said "yields its first
+argument", which was wrong past arity one and would have made the new response
+diverge silently from the old for exactly the signals where it matters. The
+phase 17 runner asserts the arity-two case (`Input.joy_connection_changed`)
+against both keys.
+
+The wait is still bounded by the broker's per-request timeout, with a frame
+deadline behind it so a signal that never fires cannot grow the pending set.
+Connect, disconnect, emit, and list are direct synchronous calls, as they always
+were.
 
 ## Phase 3: editor bridge
 
@@ -1436,3 +1453,104 @@ instead: `gd_editor_select` under `--headless --editor` sets the selection,
 `gd_editor_get_state` reads it back, and `EditorSelection.get_selected_nodes`
 through a captured handle agrees with both. The phase 16 runner asserts the
 third of those, so the runner needs no display and joins `ci:phases`.
+
+## Phase 17: signals on any target
+
+### A custom Rust callable connects to a signal of any arity
+
+The blocker for a native `await` was arity. `#[func]` has no varargs form in
+gdext 0.5.5, so the `ConduitEvalSink` idiom -- a `RefCounted` class with a fixed
+method signature -- cannot receive `SceneTree.node_added` (one argument) and
+`SceneTree.process_frame` (none) through one implementation. A signal name
+arrives as a string at run time, so there is no place to pick a sink class from
+a set of them either.
+
+`Callable::from_fn(name, |args: &[&Variant]| ...)` has no such count. gdext
+builds it as a custom callable and leaves `get_argument_count_func` unset, so
+the engine never asks. Measured rather than assumed: the phase 17 runner awaits
+the zero-argument `process_frame`, `timeout` and `renamed`, the one-argument
+`node_added`, and the two-argument `Input.joy_connection_changed`, asserting the
+argument count each time.
+
+`from_fn` is single-threaded by construction, which is exactly the constraint
+the bridge already lives under -- everything here runs on the main thread inside
+`_process`.
+
+### ONE_SHOT is not enough cleanup on its own
+
+`ConnectFlags::ONE_SHOT` drops the connection when the signal fires. It does
+nothing for the other settle path: a signal that never fires, where the pending
+op gives up at its frame deadline. A callable made with `from_fn` is not tied to
+any object's lifetime the way `from_linked_fn` is, so an abandoned connection
+would outlive the request that made it. `SignalWait::disconnect` therefore runs
+on every settle path, guarded by a validity check, and is a no-op in the fired
+case because ONE_SHOT already removed the connection.
+
+### An emitter that dies mid-await
+
+Same rule as the handle table, for the same reason: the pending op holds an
+`InstanceId` and re-resolves through `try_from_instance_id` on each poll rather
+than holding a `Gd`. A `Tween`, a `SceneTreeTimer`, or a captured node can be
+freed while the await is suspended, and the answer has to be `object_not_found`
+rather than a dereference. The runner asserts the pre-resolution case (a handle
+whose node was freed before the call); the mid-wait case takes the same code
+path one poll later.
+
+### The exposed connect API carries flags, but only under another name
+
+`Object::connect_ex` is `pub(crate)` in gdext 0.5.5 -- the generated builder
+exists but is `raw_connect_ex`. The public way to pass `ConnectFlags` is
+`Object::connect_flags(signal, callable, flags)`, in
+`godot-core/src/classes/type_safe_replacements.rs`, which also registers custom
+callables for hot-reload cleanup. `connect_ex` compiles nowhere; the editor
+handler's older idiom of a dynamic `call("connect", [signal, callable, flags])`
+through the undo manager still works and is still what the persisted path uses,
+because that path needs the call to be a recorded undo action rather than a
+direct one.
+
+### --disable-eval was not previously complete
+
+The eval-backed `await` meant the bridge compiled and ran a GDScript snippet in
+a deployment that had passed `--disable-eval` to drop exactly that machinery.
+The snippet was generated and its one interpolation was a JSON-escaped string
+literal, so it was not an injection hole and no acceptance check was wrong; but
+the flag's promise and the code disagreed, and phase 17 removes the disagreement
+rather than documenting it as intended. `--disable-eval` is a broker-side tool
+filter, so a bridge handler that reaches `run_source` is invisible to it: that
+is worth remembering the next time a handler wants to generate GDScript.
+
+### An edit-time await settles under a headless editor
+
+The editor throttles hard when idle (see the phase 5 note), which made it an
+open question whether a pending op in the editor bridge polls often enough for
+an await to settle. It does: the phase 17 runner awaits
+`EditorSelection.selection_changed` and `Resource.changed` under
+`--headless --editor` with `--disable-eval`, both settle in well under the
+request timeout, and the runner needs no display and joins `ci:phases`.
+
+### Not every property setter emits Resource.changed
+
+The resource-signal check triggers `changed` with `Resource.emit_changed`
+through `gd_resource_call`, not by writing a property. `Curve.bake_resolution`
+was tried first and does not notify -- its setter marks the bake cache dirty
+and returns. Which setters notify is a per-class detail of the engine and not
+what the check is about, so the trigger is the engine's own explicit one. The
+check still goes through the `res://` path rather than through the handle,
+because that is what proves `ResourceLoader`'s cache hands both doors the same
+instance.
+
+### A persisted connection needs both ends inside the edited scene
+
+`gd_scene_signal connect` splits on whether *both* ends are nodes of the edited
+scene: two such nodes get `CONNECT_PERSIST` and an undo action, as before;
+anything else gets a live connection reported as
+`persisted: false, undoable: false`. Both ends, because a persisted connection
+serializes the receiver into the scene file too, so a singleton at either end is
+enough to make persistence impossible. The argument is the
+one `gd_scene_node_call` and the singleton property write already make -- there
+is no scene file for a singleton's connection to serialize into, and the edited
+scene's history does not own it, so an undo entry would be a claim `gd_undo`
+could not honour. The runner asserts both halves: the singleton connect leaves
+the saved `.tscn` with no `[connection]` section, and the node-to-node connect
+still writes one.
+

@@ -69,13 +69,15 @@ function tierRuntime(record: ClassRecord, member: MemberRecord, rules: CoverageR
   }
   // Singletons became addressable when the target grammar landed: the same
   // generic tools accept `singleton:<Class>`, resolved through
-  // Engine::get_singleton (bridge/src/handlers/target.rs).
+  // Engine::get_singleton (bridge/src/handlers/target.rs). Signals joined them
+  // when gd_signal learned the grammar too; before that the signal tools were
+  // the only generic verbs still limited to a node path.
   if (record.kind === "singleton") {
     if (member.kind === "method") return { tier: "T1", via: "gd_node_call (target: singleton:...)" };
     if (member.kind === "property") {
       return { tier: "T1", via: "gd_node_get_property / gd_node_set_property (target: singleton:...)" };
     }
-    return { tier: "T2", via: "gd_game_eval" };
+    return { tier: "T1", via: "gd_signal (target: singleton:...)" };
   }
   // Object-kind classes became addressable when the handle table landed: an
   // object with no name is constructed with gd_object or captured from a call
@@ -86,7 +88,7 @@ function tierRuntime(record: ClassRecord, member: MemberRecord, rules: CoverageR
     if (member.kind === "property") {
       return { tier: "T1", via: "gd_node_get_property / gd_node_set_property (target: object:...)" };
     }
-    return { tier: "T2", via: "gd_game_eval" };
+    return { tier: "T1", via: "gd_signal (target: object:...)" };
   }
   // Resources are deliberately NOT regraded here. A handle reaches a runtime
   // resource when some call hands one out -- World3D through get_world_3d is
@@ -110,12 +112,17 @@ function tierEditor(record: ClassRecord, member: MemberRecord, rules: CoverageRu
     if (member.kind === "property") {
       return { tier: "T1", via: "gd_scene_node_get_property / gd_scene_node_set_property (target: singleton:...)" };
     }
-    return { tier: "T2", via: "gd_editor_eval" };
+    return { tier: "T1", via: "gd_scene_signal (target: singleton:...)" };
   }
+  // A resource's signals are the one member kind the resource verbs do not
+  // reach: gd_scene_signal names the emitter through the target grammar, and a
+  // res:// path enters that grammar as a handle -- ResourceLoader.load on a
+  // singleton target with capture: true. Unconditional at edit time, which is
+  // the same assumption gd_resource_* already makes.
   if (record.kind === "resource") {
     if (member.kind === "property") return { tier: "T1", via: "gd_resource_get_property / gd_resource_set_property" };
     if (member.kind === "method") return { tier: "T1", via: "gd_resource_call" };
-    return { tier: "T2", via: "gd_editor_eval" };
+    return { tier: "T1", via: "gd_scene_signal (target: object:..., captured from ResourceLoader.load)" };
   }
   // The editor half of the handle table, reached the same way through
   // gd_scene_object and the gd_scene_node_* verbs.
@@ -124,7 +131,7 @@ function tierEditor(record: ClassRecord, member: MemberRecord, rules: CoverageRu
     if (member.kind === "property") {
       return { tier: "T1", via: "gd_scene_node_get_property / gd_scene_node_set_property (target: object:...)" };
     }
-    return { tier: "T2", via: "gd_editor_eval" };
+    return { tier: "T1", via: "gd_scene_signal (target: object:...)" };
   }
   return { tier: "T2", via: "gd_editor_eval" };
 }

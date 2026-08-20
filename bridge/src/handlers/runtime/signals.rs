@@ -1,14 +1,27 @@
-//! Signal handling, consolidated behind an `op` discriminator (whitepaper
-//! sections 6.6 and 7.1): connect, disconnect, emit, list, and await.
+//! Signal handling on the game bridge, consolidated behind an `op`
+//! discriminator (whitepaper sections 6.6 and 7.1): connect, disconnect, emit,
+//! list, and await.
+//!
+//! Every op takes the target grammar, so the emitter may be a node, a
+//! singleton, or a handle-held object; `crate::handlers::signals` holds the
+//! half of that which the editor bridge shares. The connection destination
+//! takes the grammar too, under `receiver`: this tool named the emitter
+//! `node_path` and the destination `target_path` before `target` existed, so
+//! the destination could not also be called `target` without meaning two
+//! things.
 
-use godot::prelude::*;
 use serde_json::{json, Value};
 
 use crate::dispatcher::{FrameContext, HandlerOutcome};
-use crate::handlers::runtime::eval::run_source;
-use crate::handlers::runtime::support::{require_str, resolve_node, signal_names};
+use crate::handlers::args::optional_str;
+use crate::handlers::runtime::support::{require_str, resolve_target};
+use crate::handlers::signals::{self as core, Endpoint};
+use crate::handlers::target::{target_response, target_spec, target_spec_named};
 use crate::protocol::BridgeError;
-use crate::variant_json::json_to_variant;
+
+/// The live-connection flag set. Unlike the editor's persisted connections
+/// there is nothing to serialize into, so a runtime connect carries no flags.
+const CONNECT_NONE: u32 = 0;
 
 pub fn signal(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
     let op = match require_str(args, "op") {
@@ -27,88 +40,145 @@ pub fn signal(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
     }
 }
 
-fn connect(args: &Value) -> Result<Value, BridgeError> {
-    let node_path = require_str(args, "node_path")?;
-    let signal = require_str(args, "signal")?;
-    let target_path = require_str(args, "target_path")?;
-    let method = require_str(args, "method")?;
+/// Resolve both ends of a connection: the emitter under `target`/`node_path`
+/// and the destination under `receiver`/`target_path`.
+fn endpoints(args: &Value) -> Result<(Endpoint, Endpoint), BridgeError> {
+    let source_spec = target_spec(args)?;
+    let receiver_spec = target_spec_named(args, "receiver", "target_path")?;
+    let source = Endpoint { object: resolve_target(&source_spec)?, spec: source_spec };
+    let receiver = Endpoint { object: resolve_target(&receiver_spec)?, spec: receiver_spec };
+    Ok((source, receiver))
+}
 
-    let mut source = resolve_node(&node_path)?;
-    let target = resolve_node(&target_path)?;
-    let callable = Callable::from_object_method(&target, method.as_str());
-    let error = source.connect(signal.as_str(), &callable);
-    if error != godot::global::Error::OK {
-        return Err(BridgeError::CallFailed(format!(
-            "could not connect {node_path}.{signal} to {target_path}.{method} ({error:?})"
-        )));
-    }
-    Ok(json!({ "connected": true, "signal": signal }))
+fn connect(args: &Value) -> Result<Value, BridgeError> {
+    let signal = require_str(args, "signal")?;
+    let method = require_str(args, "method")?;
+    let (mut source, receiver) = endpoints(args)?;
+
+    core::connect_signal(&mut source, &signal, &receiver, &method, CONNECT_NONE)?;
+
+    Ok(target_response(
+        &source.spec,
+        json!({
+            "connected": true,
+            "signal": signal,
+            "receiver": receiver.label(),
+            "method": method,
+        }),
+    ))
 }
 
 fn disconnect(args: &Value) -> Result<Value, BridgeError> {
-    let node_path = require_str(args, "node_path")?;
     let signal = require_str(args, "signal")?;
-    let target_path = require_str(args, "target_path")?;
     let method = require_str(args, "method")?;
+    let (mut source, receiver) = endpoints(args)?;
 
-    let mut source = resolve_node(&node_path)?;
-    let target = resolve_node(&target_path)?;
-    let callable = Callable::from_object_method(&target, method.as_str());
-    if !source.is_connected(signal.as_str(), &callable) {
-        return Err(BridgeError::InvalidArgs(format!(
-            "{node_path}.{signal} is not connected to {target_path}.{method}"
-        )));
-    }
-    source.disconnect(signal.as_str(), &callable);
-    Ok(json!({ "disconnected": true, "signal": signal }))
+    core::disconnect_signal(&mut source, &signal, &receiver, &method)?;
+
+    Ok(target_response(
+        &source.spec,
+        json!({
+            "disconnected": true,
+            "signal": signal,
+            "receiver": receiver.label(),
+            "method": method,
+        }),
+    ))
 }
 
 fn emit(args: &Value) -> Result<Value, BridgeError> {
-    let node_path = require_str(args, "node_path")?;
+    let spec = target_spec(args)?;
     let signal = require_str(args, "signal")?;
-    let varargs = match args.get("args") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(items)) => {
-            items.iter().map(json_to_variant).collect::<Result<Vec<Variant>, BridgeError>>()?
-        }
-        Some(_) => return Err(BridgeError::InvalidArgs("'args' must be an array".into())),
-    };
-    let mut source = resolve_node(&node_path)?;
-    let error = source.emit_signal(signal.as_str(), &varargs);
-    if error != godot::global::Error::OK {
-        return Err(BridgeError::CallFailed(format!("emit of {node_path}.{signal} failed ({error:?})")));
-    }
-    Ok(json!({ "emitted": true, "signal": signal }))
+    let mut object = resolve_target(&spec)?;
+    core::emit_signal(&mut object, &signal, &spec.label(), args)?;
+    Ok(target_response(&spec, json!({ "emitted": true, "signal": signal })))
 }
 
 fn list(args: &Value) -> Result<Value, BridgeError> {
-    let node_path = require_str(args, "node_path")?;
-    let node = resolve_node(&node_path)?;
-    let signals: Vec<Value> = signal_names(&node)
-        .into_iter()
-        .map(|name| {
-            let connections = node.get_signal_connection_list(name.as_str()).len();
-            json!({ "name": name, "connection_count": connections })
-        })
-        .collect();
-    Ok(json!({ "node_path": node_path, "signals": signals }))
+    let spec = target_spec(args)?;
+    let object = resolve_target(&spec)?;
+    let filter = optional_str(args, "signal");
+    let signals = core::list_signals(&object, filter.as_deref());
+    Ok(target_response(&spec, json!({ "signals": signals })))
 }
 
-/// Await a signal by delegating to the evaluation runner, which handles the
-/// cross-frame suspension. The broker's timeout bounds the wait.
 fn await_signal(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
-    let node_path = match require_str(args, "node_path") {
-        Ok(value) => value,
+    let spec = match target_spec(args) {
+        Ok(spec) => spec,
         Err(err) => return HandlerOutcome::Done(Err(err)),
     };
     let signal = match require_str(args, "signal") {
         Ok(value) => value,
         Err(err) => return HandlerOutcome::Done(Err(err)),
     };
-    // serde_json string encoding is a valid GDScript string literal, so paths
-    // and names with quotes cannot break out of the generated source.
-    let path_literal = Value::String(node_path).to_string();
-    let signal_literal = Value::String(signal).to_string();
-    let source = format!("return await Signal(get_node({path_literal}), {signal_literal})");
-    run_source(&source, ctx)
+    let object = match resolve_target(&spec) {
+        Ok(object) => object,
+        Err(err) => return HandlerOutcome::Done(Err(err)),
+    };
+    core::await_signal(object, &signal, &spec, ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ctx() -> FrameContext {
+        FrameContext { frame_index: 1, last_delta_ms: 16.0 }
+    }
+
+    fn error_code(outcome: HandlerOutcome) -> String {
+        match outcome {
+            HandlerOutcome::Done(Err(err)) => err.code().to_string(),
+            _ => panic!("expected an error before any engine call"),
+        }
+    }
+
+    #[test]
+    fn op_is_required_and_unknown_ops_are_rejected() {
+        assert_eq!(error_code(signal(&json!({}), &ctx())), "invalid_args");
+        assert_eq!(error_code(signal(&json!({ "op": "subscribe" }), &ctx())), "invalid_args");
+    }
+
+    #[test]
+    fn await_needs_a_target_and_a_signal_name() {
+        assert_eq!(error_code(signal(&json!({ "op": "await" }), &ctx())), "invalid_args");
+        assert_eq!(
+            error_code(signal(&json!({ "op": "await", "target": "object:1" }), &ctx())),
+            "invalid_args"
+        );
+    }
+
+    #[test]
+    fn connect_rejects_a_target_and_a_node_path_together() {
+        let both = json!({
+            "op": "connect",
+            "signal": "timeout",
+            "method": "on_timeout",
+            "target": "singleton:Input",
+            "node_path": "/root/Main",
+        });
+        assert_eq!(error_code(signal(&both, &ctx())), "invalid_args");
+    }
+
+    #[test]
+    fn connect_rejects_a_receiver_and_a_target_path_together() {
+        let both = json!({
+            "op": "connect",
+            "signal": "timeout",
+            "method": "on_timeout",
+            "target": "/root/Main/Timer",
+            "receiver": "object:2",
+            "target_path": "/root/Main",
+        });
+        assert_eq!(error_code(signal(&both, &ctx())), "invalid_args");
+    }
+
+    #[test]
+    fn emit_rejects_a_non_array_args_field() {
+        let args = json!({ "op": "emit", "node_path": "/root/Main", "signal": "ready", "args": 3 });
+        // The argument shape is checked before the engine is touched only once
+        // the target resolves, so assert on the conversion helper directly.
+        assert_eq!(core::emit_args(&args).unwrap_err().code(), "invalid_args");
+    }
 }

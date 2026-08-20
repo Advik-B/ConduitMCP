@@ -378,13 +378,15 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
 
   gameTool(
     "gd_signal",
-    "Signal operations selected by op: connect, disconnect, emit, list, or await (await suspends until the signal fires).",
+    "Signal operations on any target, selected by op: connect, disconnect, emit, list, or await (await suspends until the signal fires and returns its arguments). Reaches a signal on a singleton or a handle-held object, not only on a node.",
     {
       op: z.enum(["connect", "disconnect", "emit", "list", "await"]).describe("Which signal operation to perform."),
-      node_path: z.string().describe("Absolute path to the emitting node.").optional(),
-      signal: z.string().describe("Signal name.").optional(),
-      target_path: z.string().describe("Absolute path to the connection target node (connect/disconnect).").optional(),
-      method: z.string().describe("Target method name (connect/disconnect).").optional(),
+      target: z.string().describe("The emitter: node path, or 'singleton:<Class>' such as singleton:Input, or 'object:<n>' for a handle held by gd_object.").optional(),
+      node_path: z.string().describe("Absolute path to the emitting node. Legacy alias for target; pass one or the other, not both.").optional(),
+      signal: z.string().describe("Signal name; filters list.").optional(),
+      receiver: z.string().describe("The connection destination (connect/disconnect), in the same grammar as target.").optional(),
+      target_path: z.string().describe("Absolute path to the destination node. Legacy alias for receiver; pass one or the other, not both.").optional(),
+      method: z.string().describe("Receiver method name (connect/disconnect).").optional(),
       args: z.array(z.any()).describe("Arguments to emit.").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
