@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { runAudit, staleClaims, summarise, TIER_LABEL, type AuditResult, type MemberVerdict, type SectionVerdict, type Tier } from "./audit.ts";
+import { runAudit, staleClaims, staleSectionRules, summarise, TIER_LABEL, type AuditResult, type MemberVerdict, type SectionVerdict, type Tier } from "./audit.ts";
 import { resolveDocsRoot } from "./docs-root.ts";
 import { EXCLUDED_AREAS } from "./section-rules.ts";
 import { capabilityIds } from "./extract-tools.ts";
@@ -102,6 +102,11 @@ function topGapClasses(members: MemberVerdict[]): string {
     .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
     .slice(0, 30)
     .map(([name, entry]) => `| \`${name}\` | ${entry.kind} | ${entry.count} |`);
+  // The best-of-both row reaching zero is the intended end state, and an empty
+  // table with a header reads as a rendering failure rather than as a result.
+  if (rows.length === 0) {
+    return "No class has a member the best of the two bridges cannot reach semantically, so this ranking is empty.";
+  }
   const header = "| Class | Kind | Members with no semantic path |\n|---|---|---|\n";
   return header + rows.join("\n");
 }
@@ -118,8 +123,6 @@ export function render(result: AuditResult): string {
 
   const t2plus = members.filter((member) => !["T0", "T1"].includes(member.best));
   const actionGaps = actions.filter((section) => !["T0", "T1"].includes(section.tier));
-  const objectGap = members.filter((member) => member.classKind === "object" && member.best === "T2").length;
-  const objectClasses = summary.classes.byKind.object ?? 0;
 
   return `# Coverage matrix: Godot ${summary.docsVersion} documentation vs. the Conduit MCP surface
 
@@ -231,8 +234,9 @@ ${areaTable(sections)}
 
 ## Why the remaining gaps exist
 
-Four missing *generic verbs* used to account for the whole class-reference gap.
-Three are now closed, and what is left has a different shape because of it.
+Five missing *generic verbs* accounted for the whole class-reference gap. All
+five are now closed, and what remains is a stated grading rather than a missing
+verb.
 
 ### Closed: singleton targeting
 
@@ -299,16 +303,45 @@ constructed. Capture is top-level only: an object nested in a returned array or
 dictionary still stringifies. And a handle dies with its process, which is what
 makes the table per bridge and the tool two tools.
 
-After the regrade, ${objectGap} object-kind members across ${objectClasses}
-classes remain at T2: signals, which no generic verb reaches the way
-\`gd_signal\` reaches one on a node.
+After the regrade, the object-kind row held only its 83 signals at T2, and
+phase 17 closed those too (below).
 
-**Resources at runtime are still graded T2**, and the grading is deliberate.
+**Resources at runtime are still graded T2**, signals included, and the grading
+is deliberate.
 A handle reaches a runtime resource when some call hands one out -- \`World3D\`
 through \`get_world_3d\` is the motivating case, and the phase 16 runner proves
 it -- but that is conditional on such a call existing, and grading 3475 members
 T1 on a conditional would move the runtime row by thousands on a claim the
 acceptance does not make.
+
+### Closed: a signal on anything the grammar names
+
+The fifth verb, and the last one. \`gd_signal\` and \`gd_scene_signal\` were the
+only generic tools that never learned the \`target\` grammar: both resolved
+\`node_path\` through a scene tree, so a signal on a singleton, on a handle-held
+object, or on a resource was reachable only by writing GDScript. That is 140
+members -- 83 on object-kind classes, 31 on singletons, 26 on resources -- and
+after phase 16 it was the entire non-node T2 remainder of the class reference.
+
+Both tools now take \`target\` for the emitter and \`receiver\` for the connection
+destination, in the same grammar, with \`node_path\` and \`target_path\` kept as
+the node-path aliases. \`gd_scene_signal\` also gained the two ops it lacked,
+\`emit\` and \`await\`, so both bridges answer the same op set; a \`list\`-only
+surface would have been a weak claim to have reached a signal at all.
+
+\`await\` needed a new mechanism rather than a new argument. It used to generate
+\`return await Signal(get_node(path), signal)\` and hand it to the evaluation
+runner, which limited it to node paths by construction and ran the eval
+machinery even under \`--disable-eval\`. It is now a native connection whose
+\`PendingOp\` settles when the signal fires, and it reports every argument the
+signal carried rather than only the first.
+
+Two limits are worth stating here. A persisted connection still needs both ends
+inside the edited scene, because it serializes both: a singleton at either end
+connects live and reports \`persisted: false, undoable: false\`, for the reason
+\`gd_scene_node_call\` gives.
+And runtime resource signals stay T2 with the rest of the runtime resource row,
+for the reason given above -- the editor row is what carries them.
 
 ## Capabilities the whitepaper specifies that are not implemented
 
@@ -365,7 +398,7 @@ ${gapClusters(sections)}
 ## Classes with the most unreachable members
 
 Deprecated members excluded, so this ranks work worth doing rather than work the
-engine is retiring. (${members.filter((m) => m.deprecated && !["T0", "T1"].includes(m.best)).length} gap members are deprecated and are excluded here.)
+engine is retiring.${t2plus.length === 0 ? "" : ` (${members.filter((m) => m.deprecated && !["T0", "T1"].includes(m.best)).length} gap members are deprecated and are excluded here.)`}
 
 ${topGapClasses(members)}
 
@@ -446,7 +479,7 @@ enabled plugin's \`_enter_tree\`, so the runner needs no display and belongs in
 the handler reads the flag back to tell a refusal from a success. POT
 extraction stayed out for the reason given above (\`docs/api-gaps.md\`).
 
-**Phase 16: object handles.** The last generic verb, and the largest single
+**Phase 16: object handles.** The fourth generic verb, and the largest single
 cluster left: 3732 members across 295 \`Object\`-derived classes that no node
 path, class name, or \`res://\` path could name. \`bridge/src/handles.rs\` holds a
 live object per bridge process, \`object:<n>\` joins the target grammar, and
@@ -471,16 +504,99 @@ array returned by a dynamic call was reported as \`[]\`, because gdext refuses t
 convert one into the untyped \`Array<Variant>\` and \`variant_to_json\` swallowed
 the refusal (\`docs/api-gaps.md\`).
 
+**Phase 17: signals on any target.** The last generic verb, and the smallest
+cluster: 140 signals on singleton-, object-, and resource-kind classes, which
+after phase 16 was every class-reference member the best-of-both row still
+graded T2. \`gd_signal\` and
+\`gd_scene_signal\` take \`target\` for the emitter and \`receiver\` for the
+connection destination; \`gd_scene_signal\` gains \`emit\` and \`await\` so both
+bridges answer the same op set; and \`await\` stops delegating to the evaluation
+runner, connecting a native callable and settling a \`PendingOp\` instead.
+*Accepted* by \`bun run phase17\`, the editor half with \`--disable-eval\`: a
+captured \`SceneTree\` lists and awaits \`process_frame\`, a \`SceneTreeTimer\` that
+exists only as a returned object awaits its \`timeout\`, \`node_added\` delivers its
+one argument, \`Input.joy_connection_changed\` connects and disconnects on a
+singleton target, a freed emitter answers \`object_not_found\`, and at edit time
+\`EditorSelection.selection_changed\` and a resource's \`changed\` both settle with
+no eval tool registered.
+
+The acceptance is falsifiable by construction rather than by flag. The
+eval-backed \`await\` generated a snippet containing \`get_node(path)\`, so no
+target that is not a node path could ever have reached it: every check above on
+\`object:<n>\` or \`singleton:<Class>\` fails against the old implementation.
+
+Five things were measured rather than assumed. A custom Rust callable reports no
+argument count, which is what lets one implementation connect to signals of
+every arity where a \`#[func]\` method cannot. \`ONE_SHOT\` does not cover the
+deadline path, so the pending op disconnects explicitly on every settle. A
+headless editor's \`_process\` does turn often enough for an edit-time await to
+settle. \`Object::connect_ex\` is \`pub(crate)\` in gdext 0.5.5 and
+\`connect_flags\` is the public door. And \`Curve.bake_resolution\` does not emit
+\`changed\`, so the resource check triggers it with \`emit_changed\` through the
+\`res://\` path instead (\`docs/api-gaps.md\`).
+
+**Phase 18: the measurement, and a corrected tutorial sweep.** Phases 15, 16
+and 17 changed the grading rules and hand-edited the prose here, but never
+re-ran the audit, so every number in this document was three phases stale and
+the headline claims of the last two phases were projections. This phase ran it.
+
+The projections held exactly: best-of-both 0 at T2, editor 0, runtime 3460. The
+class-reference tables above are now measured rather than replayed, against the
+same 4.7 documentation build the phase 14 run used -- 1078 classes and 15390
+members both reproduce, so the whole delta is the committed rule changes and
+nothing is docs drift.
+
+The tutorial half is where the correction is, and it is the phase 14 shape
+again: rules asserting absences that later phases had closed. \`t2:io_page\`
+blamed a handle gap that phase 16 shut -- \`FileAccess\` and \`DirAccess\` are
+\`RefCounted\`, so \`gd_object\` builds them; what actually blocks them is that
+\`open()\` is static and the target grammar names no class for a static call.
+\`t5:accessibility\` graded six headings "nothing reaches it" on the strength of
+\`AccessibilityServer\` being an untargetable singleton, which stopped being true
+in phase 10 -- and reading the six pages shows they never went through
+\`AccessibilityServer\` at all. They are \`DisplayServer.tts_*\`, \`OS.execute\`, a
+\`StatusIndicator\` node, \`MenuBar.prefer_global_menu\`, and two project
+settings: reachable by three separate mechanisms, none of them the one the rule
+denied. And \`t2:compute_shader\` claimed a whole page was out of reach "until
+phase 16", which had already happened. Tutorial actions graded T2 or worse move
+314 to 303, again with no tool added for them.
+
+The compute page split rather than flipping, because the runner only earned one
+heading of it. *Accepted* by \`bun run phase18\`, with \`--disable-eval\`:
+\`create_local_rendering_device\` on \`singleton:RenderingServer\` captures as a
+\`RenderingDevice\` handle and answers \`get_device_name\` on a later call, so
+obtaining a device is T1 -- and \`storage_buffer_create\` returns \`RID(...)\` as a
+display string that \`buffer_get_data\` then refuses, so the six headings built
+on the device stay T2 for the RID gap rather than the handle gap.
+
+Three things were measured rather than assumed. \`--headless\` forces the dummy
+rendering driver and answers \`null\` whatever \`--rendering-method\` says, and the
+example project ships \`gl_compatibility\`, which has no \`RenderingDevice\`
+either -- so this runner needs a display and a \`forward_plus\` engine, and it
+stays out of \`ci:phases\` for the reason phase 6 does. A stringified RID fed
+back to a method that wants one panics inside gdext's \`Object::call\`, contained
+by the dispatcher's \`catch_unwind\` and reported as \`internal_error\` rather than
+as a typed error (\`docs/api-gaps.md\`). And the tutorial rules had no equivalent
+of \`staleClaims\`, which is why they rotted for two phases without failing
+anything; \`staleSectionRules\` is now fatal in the same place, and it found a
+dead \`t0:screenshot\` rule on its first run. Both guards live inside a
+regeneration, which is the step an LFS-conscious phase skips, so
+\`bun run coverage:check\` runs them and the tier summary and writes nothing.
+
 ### Next
 
-Nothing in the class reference. The four generic verbs the coverage matrix
-named are all shipped, and what the tables still grade T2 after phase 16 is
-signals on non-node objects and the runtime-resource conditional described
-above, both of which are gradings rather than gaps in the surface.
+Nothing in the class reference, and this is now measured rather than projected.
+The five generic verbs are shipped, the best-of-both and editor rows read 0 at
+T2, and the runtime row's 3460 are all resource members -- the runtime-resource
+conditional described above, which is a grading rather than a gap.
 
-The honest next step is to regenerate the matrix and see what the numbers
-actually say, which needs an offline documentation build and writes a new 8 MB
-LFS version -- deliberately not done as part of this phase.
+The strongest remaining candidate is a static-call scheme. \`FileAccess\`,
+\`DirAccess\`, and \`ResourceLoader\`-style factories are reached through static
+methods on a class, and the target grammar names instances only, so
+\`t2:io_page\`'s 13 headings sit behind a grammar gap rather than a missing tool.
+Two smaller ones sit next to it: an RID scheme would unblock the six compute
+headings above, and the panic that a wrong-typed argument currently produces
+should be a typed error first, since both would be spent on the same call path.
 
 XR is deliberately absent from this list. It needs hardware and a runtime the
 bridge cannot simulate, and the honest answer is to say so rather than to ship a
@@ -499,6 +615,31 @@ if (import.meta.main) {
     for (const problem of stale) console.error(`  ${problem}`);
     process.exit(1);
   }
+  // The tutorial half of the same guarantee. Fatal for the same reason: a rule
+  // that never wins is either dead or shadowed, and both mean the table is
+  // reporting a reason nobody can reach.
+  const inert = staleSectionRules(result.sections);
+  if (inert.length > 0) {
+    console.error(`section-rules.ts has ${inert.length} rule(s) that never win a heading:`);
+    for (const id of inert) console.error(`  ${id}`);
+    process.exit(1);
+  }
+  // --check runs the audit and both guards and writes nothing. Regenerating
+  // stores a new 8 MB LFS version, so CLAUDE.md reserves it for when the
+  // numbers are wanted -- which means a rule edit is likely to skip it, which
+  // is exactly how the tutorial rules rotted for two phases. This is the cheap
+  // door: after editing coverage-map.ts or section-rules.ts, run it.
+  if (Bun.argv.includes("--check")) {
+    const checked = summarise(result);
+    console.log(
+      `docs ${checked.docsVersion}: ${checked.members.total} members, ${checked.sections.actions} tutorial actions, ${checked.sections.unclassified} unclassified`,
+    );
+    console.log(`members by best tier: ${JSON.stringify(checked.members.byBestTier)}`);
+    console.log(`tutorial headings by tier: ${JSON.stringify(checked.sections.byTier)}`);
+    console.log("rules check out; nothing written");
+    process.exit(0);
+  }
+
   const docs = path.join(import.meta.dir, "..", "..", "docs");
   const markdown = path.join(docs, "coverage-matrix.md");
   const json = path.join(docs, "coverage-matrix.json");

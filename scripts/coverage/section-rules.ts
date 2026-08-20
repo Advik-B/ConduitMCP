@@ -394,13 +394,6 @@ const T0_RULES: SectionRule[] = [
     ],
   },
   {
-    id: "t0:screenshot",
-    kind: "action",
-    tier: "T0",
-    via: "gd_screenshot / gd_editor_screenshot",
-    match: ["screenshot", "capture the screen"],
-  },
-  {
     id: "t0:window",
     kind: "action",
     tier: "T0",
@@ -524,13 +517,6 @@ const T5_RULES: SectionRule[] = [
       "shadow to opacity",
     ],
   },
-  {
-    id: "t5:accessibility",
-    kind: "action",
-    tier: "T5",
-    via: "no tool; AccessibilityServer is a singleton with no targeting and no dedicated surface",
-    match: ["screen reader", "accessibility", "text to speech", "desktop notification", "system tray", "global menu", "client-side decoration"],
-  },
 ];
 
 /** Only the editor's own control tree reaches it. */
@@ -601,7 +587,7 @@ const T2_RULES: SectionRule[] = [
     id: "t2:renderingdevice",
     kind: "action",
     tier: "T2",
-    via: "a passing mention of RenderingDevice outside the compute tutorial; same handle gap, reached by keyword rather than by page",
+    via: "a passing mention of RenderingDevice outside the compute tutorial; same RID gap, reached by keyword rather than by page",
     match: ["renderingdevice", "compute pipeline"],
   },
   {
@@ -734,6 +720,31 @@ const T2_RULES: SectionRule[] = [
 
 /** Reachable generically through reflection, with no dedicated verb. */
 const T1_RULES: SectionRule[] = [
+  {
+    // Corrected in phase 18, by reading all six heading bodies rather than by
+    // matching method names. The rule used to grade them T5 on the strength of
+    // AccessibilityServer being a singleton nothing could target, which stopped
+    // being true in phase 10 -- but the pages do not go through
+    // AccessibilityServer at all, and the mechanisms differ per heading:
+    // text to speech is DisplayServer.tts_*, desktop notifications are
+    // OS.execute (the page states Godot has no native API), the system tray is
+    // a StatusIndicator node, the global menu is MenuBar.prefer_global_menu,
+    // client-side decorations are the display/window/size/extend_to_title
+    // project setting, and the screen reader is
+    // accessibility/general/accessibility_support plus Control's
+    // accessibility_name and accessibility_description.
+    //
+    // T1 is a floor, not a ceiling: the two project-setting headings are
+    // arguably T0 through gd_project_set_setting. Understating there costs
+    // nothing, because T0 and T1 are both "not a gap", and one rule carries one
+    // tier. The singleton half needs no new acceptance -- `bun run phase10`
+    // already drives singleton dispatch with --disable-eval.
+    id: "t1:system_integration",
+    kind: "action",
+    tier: "T1",
+    via: "reachable without eval, by three different mechanisms: singleton:DisplayServer for text to speech and singleton:OS execute for desktop notifications (accepted by bun run phase10), a StatusIndicator or MenuBar node for the tray and the global menu, and project settings for client-side decorations and screen reader support",
+    match: ["screen reader", "accessibility", "text to speech", "desktop notification", "system tray", "global menu", "client-side decoration"],
+  },
   {
     id: "t1:script_logic",
     kind: "action",
@@ -936,7 +947,7 @@ const RESIDUE_RULES: SectionRule[] = [
     id: "t2:io_page",
     kind: "action",
     tier: "T2",
-    via: "FileAccess and DirAccess are RefCounted helpers with no handle; only the singletons among them are reachable",
+    via: "FileAccess and DirAccess are RefCounted, so gd_object create accepts them, but open() is static and the target grammar names no class for a static call, so the instance a handle holds is never an open file",
     pages: ["tutorials/io"],
     match: [""],
   },
@@ -952,7 +963,7 @@ const RESIDUE_RULES: SectionRule[] = [
     id: "t1:mesh_authoring",
     kind: "action",
     tier: "T1",
-    via: "gd_resource_call reaches mesh and surface construction, though SurfaceTool itself still has no handle",
+    via: "gd_resource_call reaches mesh and surface construction, and SurfaceTool has had an object handle since phase 16",
     match: ["what a mesh is", "surface", "meshdatatool", "immediatemesh", "decal", "fog volume", "volumetric fog", "occluder", "label3d", "textmesh", "3d text", "optimizing pixels drawn"],
   },
   {
@@ -1139,10 +1150,23 @@ const PHASE14_RULES: SectionRule[] = [
     match: ["using the visual shader editor", "visual shader node interface"],
   },
   {
+    // Split in phase 18, on a measurement rather than on the inference that
+    // phase 16 closed the page. Obtaining the device is reachable: it arrives
+    // as the return value of a RenderingServer call and capture takes a handle
+    // on it. Everything built on the device is not, for the reason the page
+    // rule below now gives.
+    id: "t1:local_rendering_device",
+    kind: "action",
+    tier: "T1",
+    via: "gd_node_call / gd_scene_node_call on singleton:RenderingServer with capture: true holds the returned RenderingDevice as an object handle; the engine answers null unless the renderer is RenderingDevice-based (docs/api-gaps.md)",
+    pages: ["tutorials/shaders/compute_shaders"],
+    match: ["create a local renderingdevice"],
+  },
+  {
     id: "t2:compute_shader",
     kind: "action",
     tier: "T2",
-    via: "the compute workflow is create_local_rendering_device() then a pipeline built on the device it returns; nothing can name a returned object, so the whole page is out of reach until phase 16",
+    via: "the device itself is reachable by handle since phase 16, but every step built on it exchanges RIDs -- storage_buffer_create and friends return an RID, which has no JSON form and stringifies, so no later call can spend one (docs/api-gaps.md)",
     pages: ["tutorials/shaders/compute_shaders"],
     match: [""],
   },

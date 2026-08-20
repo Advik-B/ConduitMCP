@@ -1554,3 +1554,95 @@ could not honour. The runner asserts both halves: the singleton connect leaves
 the saved `.tscn` with no `[connection]` section, and the node-to-node connect
 still writes one.
 
+## Phase 18: the measurement, and what the compute page actually reaches
+
+### A local RenderingDevice needs a RenderingDevice-based renderer
+
+`RenderingServer.create_local_rendering_device()` answers `null` unless the
+running engine uses a renderer built on `RenderingDevice`. Two deployments this
+repository uses do not:
+
+- `--headless` forces the dummy rendering driver, and it answers `null` whatever
+  `--rendering-method` says. Passing `--rendering-method forward_plus` alongside
+  `--headless` does not change the answer; this was measured, not inferred from
+  the driver's name.
+- `example-project` ships `renderer/rendering_method="gl_compatibility"`, and the
+  Compatibility renderer is not `RenderingDevice`-based, so a windowed editor on
+  the project's own setting answers `null` too.
+
+`bun run phase18` therefore launches a windowed editor with
+`--rendering-method forward_plus` explicitly, and it is not in `ci:phases`, for
+the reason phase 6 is not: it needs a display, and here also a GPU whose driver
+carries a real `RenderingDevice`. Under those conditions the call returns a
+device, `capture: true` takes a handle on it, and `get_device_name` answers on a
+later call from that handle -- which is what licenses grading "Create a local
+RenderingDevice" T1 rather than T2.
+
+### An RID has no JSON form, so the compute pipeline stops at the device
+
+Every step of the compute workflow after the device exchanges RIDs:
+`storage_buffer_create`, `shader_create_from_spirv`, `uniform_set_create`, and
+`compute_pipeline_create` each return one, and the calls that consume them want
+one back. `variant_json.rs` has no RID case -- RID joins `Callable` and `Signal`
+in the "no meaningful JSON form" branch -- so a returned RID stringifies to its
+display form, `RID(509086768562176)`.
+
+That string cannot be spent. It is a `String` by the time it reaches
+`json_to_variant`, and the method wants an `RID`. So phase 18 split
+`t2:compute_shader` rather than flipping it: obtaining the device is T1, and the
+six headings built on the device stay T2 for the RID gap, not for the handle gap
+the rule used to cite. Closing it needs a scheme in the same family as
+`object:<n>` -- a name for a value the wire cannot carry -- which is named in the
+matrix's `### Next` rather than shipped here.
+
+### A wrong-typed argument panics inside Object::call
+
+Feeding that stringified RID back to `buffer_get_data` does not produce a typed
+error. gdext's `Object::call` panics on an argument type mismatch, the
+dispatcher's `catch_unwind` (`bridge/src/dispatcher.rs`) contains it, and the
+client sees `internal_error: internal error: handler panicked`.
+
+The bridge stays up, so this is a reporting defect rather than a safety one, but
+it diverges from the structured error model of whitepaper section 7.4: the
+caller cannot tell a bad argument from a genuine internal fault. gdext 0.5.5
+exposes no `try_call` on `Object` to fall back to, so a fix means validating
+arguments against the method's `ClassDB` signature before dispatching. Phase 18
+is a measurement phase and did not take that on; the acceptance asserts only
+that the call *fails*, deliberately not that it fails this way, so a later fix
+to a typed error does not break the runner.
+
+### The tutorial rules had no staleClaims, and rotted for two phases
+
+`staleClaims` has validated the class-reference coverage map against the
+documentation since the audit shipped, and it is fatal. The tutorial rules had
+no equivalent, which is why phases 16 and 17 could close gaps that three
+`section-rules.ts` entries went on citing -- one of them naming the phase that
+closed it ("out of reach until phase 16").
+
+`staleSectionRules` is now fatal in the same place, and the check has to be
+"never wins a heading", not "matches something in isolation": `matchSection` is
+first-match-wins and several rules use `match: [""]` to claim a whole page, so a
+fully shadowed rule still matches everything when asked on its own. It applies
+to action rules only -- a concept needle exists to keep prose out of the
+denominator, and a list of them that over-provides costs nothing. On its first
+run it found `t0:screenshot`, an action rule claiming T0 coverage for headings
+no page in the corpus has; it was removed rather than kept as a claim reaching
+nothing.
+
+Placing it there only half-closes the hole, and the other half is worth stating.
+Both guards run inside `bun run coverage`, so they fire when the matrix is
+regenerated -- and regeneration stores a new 8 MB LFS version, which `CLAUDE.md`
+reserves for when the numbers are actually wanted. A phase that edits
+`section-rules.ts` and skips the regeneration is the likely path, and it is the
+path that produced this rot in the first place.
+
+`bun run coverage:check` is the answer: it runs the audit and both guards,
+prints the tier summary so a rule edit's effect is visible, and writes nothing,
+so it costs no LFS. It still needs `CONDUIT_GODOT_DOCS`, so it cannot run in CI
+without a documentation checkout -- and neither could any check that grades
+rules against the real reference. Run it after touching either rule table.
+
+A committed corpus fixture would have made the check CI-runnable, and was
+rejected: 405 KB of heading data duplicating what `coverage-matrix.json`
+already holds, needing its own regeneration to stay honest, for a check whose
+whole purpose is catching data that drifted out of sync.

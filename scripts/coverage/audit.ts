@@ -238,6 +238,29 @@ function matchSection(section: SectionRecord, rules: SectionRule[]): SectionRule
   return null;
 }
 
+/**
+ * Section rules that never win a heading.
+ *
+ * `staleClaims` does this for the class-reference table and is fatal; the
+ * tutorial rules had no equivalent, and rotted for two phases without anything
+ * failing -- phase 16 closed the object-handle gap and three rules went on
+ * citing it, one of them naming the phase that closed it.
+ *
+ * The check has to be "never wins", not "matches something in isolation".
+ * `matchSection` is first-match-wins and several rules use `match: [""]` to
+ * claim a whole page, so a rule fully shadowed by an earlier one still matches
+ * everything when asked on its own. Shadowing is precisely how a stale rule
+ * hides.
+ */
+export function staleSectionRules(sections: SectionRecord[], rules: SectionRule[] = SECTION_RULES): string[] {
+  const winners = new Set(classifySections(sections, rules).map((section) => section.rule));
+  // Action rules only. A concept rule is a keyword needle whose job is to keep
+  // prose out of the denominator, and a list of them that over-provides costs
+  // nothing; an action rule that never wins is a coverage claim reaching
+  // nothing, which is the thing worth failing on.
+  return rules.filter((rule) => rule.kind === "action" && !winners.has(rule.id)).map((rule) => rule.id);
+}
+
 export function classifySections(sections: SectionRecord[], rules: SectionRule[] = SECTION_RULES): SectionVerdict[] {
   return sections.map((section) => {
     const exclusion = excludedArea(section);
