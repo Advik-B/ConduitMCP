@@ -185,6 +185,8 @@ These keep a watching human oriented, and recover a session from a modal dialog.
 | `gd_editor_dialog_choose` | editor | Presses a named button on a visible dialog. A choice may discard unsaved work. |
 | `gd_editor_ui` | editor | Tier-2 control-tree access: `find`, `describe`, `click`, `set_text`, `set_toggle`, `select_item`. Fragile across editor versions. |
 | `gd_editor_screenshot` | editor | The editor window as an image block. `not_available_headless` under a headless display server. |
+| `gd_editor_get_logs` | editor | Editor log output since the last call. Its own cursor, separate from `gd_editor_get_errors`. |
+| `gd_editor_get_errors` | editor | New editor error and warning lines since the last call. Where a soft engine failure explains itself: the call reports success and the reason is printed here. `log_unavailable` if the editor was not launched with a log file. |
 
 ## Reflection (classdb)
 

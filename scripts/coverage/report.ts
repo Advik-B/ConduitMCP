@@ -729,28 +729,86 @@ gains the half phase 18 left empty, since the buffer this runner creates carries
 input data as a tagged \`PackedByteArray\`. The runner stays out of \`ci:phases\` for
 the reason phase 18 does.
 
+**Phase 21: the editor's error stream, and the argument the engine ate.** The
+item the last \`### Next\` called clearest, and it turned out to rest on a
+measurement three documents had wrong.
+
+The engine's convention is to print and return, so an editor-side call that
+fails softly reaches a client as a success carrying a useless value. The tool
+that would explain it existed only in the game personality. Registering the same
+pair on the editor was the whole plan; the plan did not survive the first
+measurement. An editor launched with \`--log-file <path>\` answers
+\`["--editor"]\` to \`OS.get_cmdline_args()\` -- the engine keeps what it
+recognises and forwards only the remainder, which is the same mechanism that
+makes \`--conduit\` work as an opt-in. So the cmdline scan that was supposed to
+find the editor's log never fired once since phase 3, every read fell through to
+\`user://logs/godot.log\` where the *game* writes, and on a machine where a game
+had ever run the file existed, so the read succeeded and returned nothing. That
+also retires the phase 3 note blaming the same silence on flush timing inside
+the editor process: the handler was reading a different file.
+
+The path therefore has to be supplied rather than discovered. \`gd_editor_launch\`
+sets \`CONDUIT_LOG_FILE\` to the path it already passes to \`--log-file\`, and the
+editor resolver reads that and refuses to fall back, because falling back is
+what produced the silent wrong-file read. An unopenable log is now an error
+rather than an empty tail: \`read_log_range\` returns a \`Result\` and the two
+personalities answer differently, since for a running game an absent log is
+transient and for the editor it means nobody said where it is.
+
+*Accepted* by \`bun run phase21\`, headless and with \`--disable-eval\`:
+\`get_node("Missing")\` returns null with no error while printing one,
+\`gd_editor_get_errors\` returns that line, the runner's own read of the same file
+taken before the tool call is the same line, an immediate second call is empty,
+the log cursor still holds what the error cursor consumed, and a 64-byte read
+reports \`truncated\`. A second editor with no log file answers
+\`log_unavailable\`, and a third launched through \`gd_editor_launch\` -- the
+shipped path, which picks its own log path rather than being handed one --
+answers with the error too. Two checks are adversarial rather than agreeable: a sentinel
+is planted in the game's \`user://logs/godot.log\` first, and neither editor's
+answer may contain it -- without that, both halves would pass while reading the
+wrong file, which is exactly how this survived eighteen phases. It is in
+\`ci:phases\`, which phases 18 and 20 could not be: nothing here needs a display.
+
+The phase 20 runner is the second acceptance, extended rather than replaced. It
+proved a soft refusal by draining the editor's pipes, which is what an MCP
+client cannot do; it now launches with a log file as well and asserts that
+\`gd_editor_get_errors\` carries the same \`TypedArray\` refusal the pipe saw. Two
+independent observations of one message, which is the gap closing rather than
+being asserted closed.
+
+One measurement decided the implementation rather than the design. From inside
+the editor, \`FileAccess.open\` succeeds on absolute paths outside the project and
+fails on the one file the engine's own logger holds open, while Rust's
+\`std::fs\` reads it in the same process at the same moment -- so a GDScript or
+eval version of this tool could not have worked on Windows.
+
+The names diverge from whitepaper section 6.7, which says \`gd_get_logs\` and
+\`gd_get_errors\` are meaningful in both contexts. The mechanism is what it
+describes; the names are \`gd_editor_get_logs\` and \`gd_editor_get_errors\`,
+mirroring \`gd_editor_screenshot\`, because the broker routes one MCP tool to one
+bridge and both bridges are connected at once. They sit in \`collab\` beside that
+screenshot rather than in \`runtime\`, which is the game group: an editor
+diagnostic gated behind the game tools would vanish in the deployment that most
+needs it.
+
 ### Next
 
-Nothing left on the compute page, and nothing left in the class reference: five
-generic verbs, four target schemes, and a value form for the one thing that is
-neither an object nor a name.
+Nothing left on the compute page, nothing left in the class reference, and the
+editor's own output now has a tool: five generic verbs, four target schemes, a
+value form for the one thing that is neither an object nor a name, and both
+processes able to say what went wrong.
 
-The clearest remaining item is one phase 20 found rather than predicted. An
-engine error printed during an editor-side call reaches no client. \`gd_get_logs\`
-and \`gd_get_errors\` register only in the game personality, so the editor's error
-stream has no tool that can read it back, and the phase 20 runner saw the
-\`TypedArray\` message only because it spawns the editor itself and drains its
-pipes. That is the difference between a caller who can tell \`RID(0)\` from a
-uniform set and one who cannot. \`log_tail.rs\` already does this for the game,
-but it is a tool addition rather than a one-file change: a new handler on the
-editor personality needs a \`TOOL_GROUP_BY_NAME\` entry, and \`runtime\` is the
-game group, so the group is a decision the work inherits.
-
-A smaller one on the same call: \`gd_classdb\` does not surface a method
-argument's property hint, so \`Array[RDUniform]\` and \`Array\` read the same on the
-tool surface, as do \`compute_pipeline_create\`'s specialization constants. Nothing
+The clearest remaining item is the one phase 20 named second, and it is small.
+\`gd_classdb\` does not surface a method argument's property hint, so
+\`Array[RDUniform]\` and \`Array\` read the same on the tool surface, as do \`compute_pipeline_create\`'s specialization constants. Nothing
 depends on it now, but it is why a caller cannot discover an element type without
 running the call.
+
+Phase 21 leaves one of its own, and it is a limitation rather than a gap: an
+editor a human opened by hand has no log tool, because nothing told it to write
+a log and nothing can tell it afterwards. The bridge has nothing to read there,
+so the honest answer is \`log_unavailable\` naming the fix, which is what it
+returns.
 
 Two carried forward from the last \`### Next\`, unchanged. The per-member via
 strings in the class-reference tables say \`target: object:...\` for static

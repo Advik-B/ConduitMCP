@@ -10,7 +10,7 @@
 //   - hold a movement action for a duration and observe the effect;
 //   - capture a screenshot;
 //   - pause and step the game a fixed number of frames;
-//   - read back errors;
+//   - read back logs and errors;
 //   - stop the game and see a clean game_exited event.
 //
 // Run with `bun tests/evals/phase2_runtime.ts` (needs GODOT_BIN and a display:
@@ -201,9 +201,20 @@ async function runChecks(client: Client): Promise<void> {
   record("pause_step", stepped.stepped_frames === 5, `stepped ${stepped.stepped_frames} frames while paused`);
   await callJson(client, "gd_pause", { paused: false });
 
-  console.log("\nReading back errors ...");
+  console.log("\nReading back logs and errors ...");
   const errors = await callJson(client, "gd_get_errors", {});
   record("read_errors", Array.isArray(errors.errors), `gd_get_errors returned ${errors.errors?.length ?? "?"} error line(s)`);
+
+  // A clean run has no errors, so the check above passes on silence and would
+  // pass just as well against a log the bridge cannot open. gd_get_logs is the
+  // positive half: the engine always writes a banner, so an empty answer here
+  // means the game's own tail is broken rather than that nothing happened.
+  const logs = await callJson(client, "gd_get_logs", {});
+  record(
+    "read_logs",
+    typeof logs.logs === "string" && logs.logs.includes("Godot Engine"),
+    `gd_get_logs returned ${logs.logs?.length ?? "?"} bytes`,
+  );
 
   console.log("\nStopping the game and checking for a game_exited event ...");
   const eventsBefore = await callJson(client, "gd_get_events", {});

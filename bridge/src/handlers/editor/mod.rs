@@ -11,6 +11,7 @@ pub mod eval;
 pub mod files;
 pub mod import_export;
 pub mod input_map;
+pub mod logs;
 pub mod pixel;
 pub mod play;
 pub mod plugins;

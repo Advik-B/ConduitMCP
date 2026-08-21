@@ -192,6 +192,8 @@ pub enum BridgeError {
     NetworkError(String),
     #[error("{0}")]
     ObjectNotFound(String),
+    #[error("{0}")]
+    LogUnavailable(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -214,6 +216,7 @@ impl BridgeError {
             BridgeError::NotBreaked(_) => "not_breaked",
             BridgeError::NetworkError(_) => "network_error",
             BridgeError::ObjectNotFound(_) => "object_not_found",
+            BridgeError::LogUnavailable(_) => "log_unavailable",
             BridgeError::Internal(_) => "internal_error",
         }
     }

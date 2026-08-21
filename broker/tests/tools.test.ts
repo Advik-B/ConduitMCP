@@ -57,6 +57,8 @@ const EXPECTED_TOOLS = [
   "gd_classdb",
   "gd_debug",
   "gd_editor_dialog_choose",
+  "gd_editor_get_errors",
+  "gd_editor_get_logs",
   "gd_editor_get_state",
   "gd_editor_inspect",
   "gd_editor_launch",
@@ -182,9 +184,18 @@ describe("tool definitions", () => {
   // bridge process, so a single tool would need a bridge argument that the
   // gd_node_call / gd_scene_node_call split already encodes in the name. The
   // ceiling again lands on the exact new count.
+  //
+  // Phase 21 moves it to 97. The argument is that the editor's own output was
+  // the last observation channel with no tool at all: an engine error printed
+  // during an editor-side call reached no client, so a soft failure arrived as
+  // a successful call carrying a useless value. They are two rather than one
+  // for the reason the game pair is two -- the cursors are independent, so
+  // polling for errors must not consume the log stream -- and they mirror
+  // gd_screenshot -> gd_editor_screenshot rather than inventing a shape. The
+  // ceiling again lands on the exact new count.
   test("the tool surface stays within the revised section 7.1 budget", () => {
     expect(registrations.length).toBeGreaterThanOrEqual(40);
-    expect(registrations.length).toBeLessThanOrEqual(95);
+    expect(registrations.length).toBeLessThanOrEqual(97);
   });
 
   test("every tool name is gd_-prefixed and unique", () => {
@@ -210,7 +221,7 @@ describe("tool definitions", () => {
   });
 
   test("read tools are annotated read-only and non-destructive", () => {
-    for (const name of ["gd_node_get_property", "gd_get_logs", "gd_perf", "gd_status"]) {
+    for (const name of ["gd_node_get_property", "gd_get_logs", "gd_editor_get_logs", "gd_perf", "gd_status"]) {
       const tool = registrations.find((r) => r.name === name);
       expect(tool?.config.annotations?.readOnlyHint).toBe(true);
       expect(tool?.config.annotations?.destructiveHint).toBe(false);

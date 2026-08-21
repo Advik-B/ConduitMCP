@@ -92,8 +92,9 @@ Errors carry a stable `code`, a message that usually names the fix, and a `retry
 | `no_edited_scene` | Nothing open in the editor. `gd_scene_open`. |
 | `node_not_found` | The message names the nearest existing ancestor. Re-find the path rather than guessing again. |
 | `invalid_property` | Wrong name for that class. `gd_classdb` with `op=properties`. |
-| `call_failed` | The engine call itself failed; read the message, and `gd_get_errors` if a game is running. |
+| `call_failed` | The engine call itself failed; read the message, then `gd_editor_get_errors` for an edit-time call or `gd_get_errors` if a game is running. |
 | `not_available_headless` | No renderer under `--headless`. Assert on state instead of pixels. |
+| `log_unavailable` | The editor is not writing a log this bridge can find. It needs `CONDUIT_LOG_FILE` naming the same path as its `--log-file`; `gd_editor_launch` sets both. Ask the human to relaunch, or read errors from a running game instead. |
 | `editor_running` | Addon install refused while an editor is connected. `gd_editor_quit`, install, relaunch. |
 | `already_connected` | An editor is already up. Use it; quit first only to deliberately relaunch. |
 | `editor_running_unbridged` | A Godot is running that the broker did not start. If it is this project, it was opened without the opt-in: ask the human to relaunch it with `--conduit` or `CONDUIT_ENABLE` and the broker attaches. Only pass `force=true` if that process is a different project. |

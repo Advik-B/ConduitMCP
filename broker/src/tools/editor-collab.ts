@@ -88,6 +88,20 @@ export function registerEditorCollabTools(server: McpServer, manager: BridgeMana
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   );
 
+  editorTool(
+    "gd_editor_get_logs",
+    "Read editor log output appended since the last call, capped by max_bytes (the tail is kept when clipped). The editor half of gd_get_logs, with its own cursor.",
+    { max_bytes: z.number().int().min(1).describe("Maximum bytes to return (default 65536).").optional() },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  );
+
+  editorTool(
+    "gd_editor_get_errors",
+    "Read new error and warning lines from the editor log since the last call. This is where an engine error printed during an editor-side call surfaces, including a soft failure the call itself reported as success.",
+    { max_bytes: z.number().int().min(1).describe("Maximum bytes to scan (default 65536).").optional() },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  );
+
   server.registerTool(
     "gd_editor_screenshot",
     {

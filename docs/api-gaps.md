@@ -237,8 +237,15 @@ path.
 sessions in Godot 4.7.1, regardless of the project setting's value; only
 game/export runs write `user://logs/godot.log` on their own. The reliable
 mechanism for editor-mode log capture is the `--log-file <path>` launch
-argument, which `log_tail::log_file_path()` prefers over the project setting
-when present.
+argument. *This note used to end "which `log_tail::log_file_path()` prefers over
+the project setting when present". It could not: the engine consumes
+`--log-file` before `OS.get_cmdline_args()` reports anything, so that scan never
+fired once. Phase 21 replaced it with `CONDUIT_LOG_FILE`.*
+
+*The cause the paragraph below settles on was measured and found wrong in phase
+21: the handler was reading a different file. The note is kept rather than
+deleted, because the subprocess it led to is still what `gd_script_validate`
+uses and still for a good reason. See "Phase 21".*
 
 `gd_script_validate` originally reloaded the script in the live editor
 process and tailed its own `--log-file` output. Reads from within that same
@@ -1928,3 +1935,131 @@ The guard is `get_stage_compile_error`. A GLSL mistake does not fail
 compiler's message -- so a chain that skipped the check would fail three calls
 later, inside `shader_create_from_spirv`, with an error about the shader rather
 than about the source. The acceptance reads it before trusting the SPIRV.
+
+---
+
+## Phase 21: the editor's error stream, and the argument the engine ate
+
+### OS.get_cmdline_args() does not report engine arguments
+
+The finding the phase turns on, and it invalidates two notes above rather than
+adding to them. An editor launched as
+
+```
+godot --headless --editor --path example-project --log-file <path>
+```
+
+answers `["--editor"]` to `OS.get_cmdline_args()`. Not the path, not the
+headless flag, and not the log file. The engine consumes what it recognises
+during its own argument parsing and hands the bridge only the remainder, which
+is the same mechanism that lets `--conduit` work as an opt-in: an argument the
+engine does not understand is one the extension can see. `get_cmdline_user_args()`
+is empty, since nothing followed a `--`.
+
+So `log_tail::log_file_path_from_cmdline()`, which scanned that list for
+`--log-file`, never once fired in any editor session since phase 3. Every call
+fell through to the project-setting path, `user://logs/godot.log`, which the
+editor does not write and the *game* does. On a machine where a game had ever
+run, the editor was reading some earlier game's log; the file existed, so the
+read succeeded, and the answer was an empty tail.
+
+### The phase 3 log-timing note was wrong about its own cause
+
+The note under "Phase 3: editor bridge" records that `gd_script_validate`'s
+in-process reads of the editor's `--log-file` "did not observe the just-emitted
+diagnostic lines within several real seconds", while a separate process reading
+the same file did, and that "the exact mechanism behind that gap was not pinned
+down". It was not a flush question and not a same-process-read question. The
+handler was reading a different file.
+
+The measurement that settles it reads the same path from both processes at the
+same instant: the runner snapshots the log immediately before issuing the tool
+call, and with `CONDUIT_LOG_FILE` supplying the path, the line the runner reads
+off disk is the line the tool returns, on the first call, with no wait. That
+comparison is now a permanent check in `bun run phase21`
+(`the_editor_reads_what_another_process_reads`) rather than a probe, so the
+claim cannot quietly become false again.
+
+The subprocess route `gd_script_validate` moved to is still the right answer for
+it -- a bounded verdict wants a process whose output is complete by definition --
+so nothing is reverted here. Only the reason it was needed changes.
+
+### The editor cannot be told where its log is except by whoever launched it
+
+A consequence of the first note, and the reason this phase adds an environment
+variable rather than none. The editor has no log at all unless something asked
+for one (`debug/file_logging/enable_file_logging` is not honoured for `--editor`
+sessions), the argument that asks is invisible from inside the process, and no
+engine API reports the active log path. `gd_editor_launch` therefore sets
+`CONDUIT_LOG_FILE` to the same path it passes to `--log-file`, and
+`log_tail::editor_log_path()` reads that and nothing else.
+
+Deliberately nothing else: falling back to the project setting is what produced
+the silent wrong-file read above. `gd_editor_get_logs` and `gd_editor_get_errors`
+report `log_unavailable` instead, naming both the variable and the launch
+argument. The phase 21 acceptance plants a sentinel line in the game's
+`user://logs/godot.log` and asserts it appears in neither tool's answer, because
+a check that only asserted "an error came back" would pass while reading the
+wrong file -- which is precisely how this went unnoticed for eighteen phases.
+
+A third editor in that runner is launched through `gd_editor_launch` rather than
+by the runner, because that is the path a real client takes and it is the one
+where the log path is chosen by the broker (`<runtime-dir>/conduit-editor.log`)
+instead of supplied by the test.
+
+The limitation this leaves is honest and worth stating: an editor a human opened
+by hand has no log tool. That is not a bridge decision; there is nothing for the
+bridge to read.
+
+### FileAccess cannot open the log the engine's own logger holds, but std::fs can
+
+Measured while separating the two hypotheses above, and it decides the
+implementation language rather than being a curiosity. From inside the editor,
+`class:FileAccess` with `open` succeeds on an absolute path outside the project
+in either slash form, and fails -- returning null -- on the one file the
+engine's `RotatedFileLogger` has open for writing. Rust's `std::fs::File::open`
+in the same process, on the same path, at the same moment, reads it fine, which
+is what the shipped handler uses.
+
+The practical consequence: a GDScript-side or eval-based version of this tool
+could not have worked on Windows, and neither could a project-defined tool.
+
+### An unopenable log and an empty log were the same answer
+
+`read_log_range` returned `(String::new(), false, start_offset)` when `File::open`
+failed, so "there is no log", "the log cannot be read", and "the log has nothing
+new" were one response. It now returns `io::Result<LogSlice>` and each caller
+decides: the game's pair keeps the silent-empty behaviour, because for a running
+game an absent log is transient and a later call answers; the editor's pair
+reports `log_unavailable`, because there it means nobody said where the log is
+and no amount of waiting fixes it.
+
+This is phase 20's lesson pointed at the tool built to fix it. A failure that
+reports success reaches an MCP client as a successful call, and a diagnostics
+tool that answers silence when it should answer misconfiguration is the same
+defect one layer up.
+
+### The tools are named for the bridge, which diverges from section 6.7
+
+Whitepaper section 6.7 says `gd_get_logs` and `gd_get_errors` are "meaningful in
+both contexts". The mechanism it describes is what shipped -- same tail, same
+byte cursors, same `max_bytes` bound, over the editor's own file -- but the
+names differ, because the broker routes one MCP tool to one bridge and both
+bridges are connected at once. This is the same divergence `### gd_classdb
+routing` records, resolved the other way: `gd_classdb` could be one tool because
+the reflection data is identical in both processes, and a log is not.
+
+`gd_editor_get_logs` and `gd_editor_get_errors` therefore mirror
+`gd_screenshot` -> `gd_editor_screenshot`, and sit in the `collab` group beside
+it. Not `runtime`: that is the game group, so an editor-side diagnostic gated
+behind it would vanish in exactly the deployment that slimmed the game surface
+away. Section 6.7 has been updated to name them.
+
+### The game must not read CONDUIT_LOG_FILE
+
+Registration, not configuration, enforces this, and it is why the two tools are
+editor-only with a test asserting it. A game launched by `gd_play` inherits the
+editor's environment, including `CONDUIT_LOG_FILE`, so a game-side handler
+reading that variable would answer with the editor's log. The game's own pair
+resolves its path from the project setting, which is correct for a process that
+writes `user://logs/godot.log` itself.

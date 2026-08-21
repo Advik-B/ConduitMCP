@@ -469,10 +469,14 @@ export function registerSessionTools(
         }
         spawnArgs.push("--log-file", logPath);
 
+        // The bridge cannot find that path on its own: the engine consumes
+        // --log-file during its own argument parsing, so OS.get_cmdline_args()
+        // never reports it (docs/api-gaps.md). CONDUIT_LOG_FILE is how
+        // gd_editor_get_logs and gd_editor_get_errors learn where to read.
         const proc = spawn(godot.path, spawnArgs, {
           detached: true,
           stdio: "ignore",
-          env: { ...process.env, CONDUIT_RUNTIME_DIR: options.runtimeDir },
+          env: { ...process.env, CONDUIT_RUNTIME_DIR: options.runtimeDir, CONDUIT_LOG_FILE: logPath },
         });
         // The editor must outlive a broker restart (section 7.5).
         proc.unref();

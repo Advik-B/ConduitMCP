@@ -86,6 +86,8 @@ impl HandlerRegistry {
         handlers.insert("gd_redo", editor::editor_state::redo);
         handlers.insert("gd_editor_get_state", editor::editor_state::get_state);
         handlers.insert("gd_debug", editor::debug::debug);
+        handlers.insert("gd_editor_get_logs", editor::logs::get_logs);
+        handlers.insert("gd_editor_get_errors", editor::logs::get_errors);
         handlers.insert("gd_editor_select", editor::collab::select);
         handlers.insert("gd_editor_open_script", editor::collab::open_script);
         handlers.insert("gd_editor_inspect", editor::collab::inspect);
@@ -242,6 +244,25 @@ mod tests {
     fn editor_registry_includes_debugger_tool() {
         let names = HandlerRegistry::editor().tool_names();
         assert!(names.contains(&"gd_debug"), "gd_debug must be registered on the editor bridge");
+    }
+
+    #[test]
+    fn editor_registry_includes_the_log_tools() {
+        let names = HandlerRegistry::editor().tool_names();
+        for tool in ["gd_editor_get_logs", "gd_editor_get_errors"] {
+            assert!(names.contains(&tool), "{tool} must be registered on the editor bridge");
+        }
+    }
+
+    #[test]
+    fn editor_log_tools_stay_off_the_game_bridge() {
+        // The game has its own pair over its own file. Registering these there
+        // would read CONDUIT_LOG_FILE, which the game inherits from the editor
+        // that launched it, so a game would answer with the editor's log.
+        let names = HandlerRegistry::game().tool_names();
+        for tool in ["gd_editor_get_logs", "gd_editor_get_errors"] {
+            assert!(!names.contains(&tool), "{tool} must not be registered on the game bridge");
+        }
     }
 
     #[test]

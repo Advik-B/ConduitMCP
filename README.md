@@ -158,6 +158,7 @@ Run `conduit-mcp-server --help` for the full option list, or read [docs/environm
 | `--audit-log <path>` | `CONDUIT_AUDIT_LOG` | Append a JSONL record of every tool call (off by default); `--audit-max-bytes` sets the rotation size. |
 | `--timeout-ms <n>` | `CONDUIT_TIMEOUT_MS` | Ordinary tool timeout, default 10000. `--eval-timeout-ms` (120000) covers eval and await, `--export-timeout-ms` (600000) covers export. |
 | `--runtime-dir`, `--sock`, `--tcp` | `CONDUIT_RUNTIME_DIR`, `CONDUIT_SOCK`, `CONDUIT_TCP` | Where the broker and bridge meet. Rarely needed; see the reference. |
+| | `CONDUIT_LOG_FILE` | Set on the *editor* process, not the broker: where that editor writes its engine log, which is what `gd_editor_get_errors` reads. `gd_editor_launch` sets it; an editor you start yourself needs it alongside `--log-file`. |
 
 Boolean variables are off when unset, empty, `0`, `false`, `no`, or `off`, and on for anything else. Boolean flags with a `--no-` form (`--no-auto-install`, `--no-tcp`) override the variable in the other direction.
 

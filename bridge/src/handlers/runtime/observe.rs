@@ -229,12 +229,21 @@ fn resize_within(image: &mut Gd<Image>, max_dimension: i32) {
 
 /// Read bytes appended to the engine log since `offset`, advancing it. Returns
 /// the new text and whether it was clipped to `max_bytes` (the tail is kept).
+///
+/// A log that cannot be opened reads as "nothing new" rather than as an error,
+/// which is right for a game and wrong for the editor: a game writes its log
+/// itself, so absence means the engine has not written yet and a later call
+/// answers. The editor pair (`handlers/editor/logs.rs`) reports the same
+/// condition as `log_unavailable`, because there it means nobody said where the
+/// log is.
 fn read_new_log(offset: &AtomicU64, max_bytes: usize) -> (String, bool) {
-    let Some(path) = log_tail::log_file_path() else {
-        return (String::new(), false);
-    };
+    let path = log_tail::game_log_path();
     let start = offset.load(Ordering::Relaxed);
-    let (text, truncated, new_offset) = log_tail::read_log_range(&path, start, max_bytes);
-    offset.store(new_offset, Ordering::Relaxed);
-    (text, truncated)
+    match log_tail::read_log_range(&path, start, max_bytes) {
+        Ok(slice) => {
+            offset.store(slice.next_offset, Ordering::Relaxed);
+            (slice.text, slice.truncated)
+        }
+        Err(_) => (String::new(), false),
+    }
 }

@@ -67,6 +67,7 @@ processes. Set these on the Godot process, not on the broker.
 | `CONDUIT_RUNTIME_DIR` | Directory for the socket endpoint, as above. Must match the broker's value. A broker-launched editor inherits it automatically. |
 | `CONDUIT_TCP` | *Flag.* Loopback TCP transport, as above. Must match the broker's value. |
 | `CONDUIT_SOCK` | Explicit endpoint override, honoured by the **editor** role only. The game role ignores it on purpose: a game launched from the editor inherits the editor's environment and must not bind the editor's endpoint. |
+| `CONDUIT_LOG_FILE` | Where the **editor** process is writing its engine log, for `gd_editor_get_logs` and `gd_editor_get_errors`. It has to be told: the `--log-file` launch argument that makes an editor write a log is consumed by the engine's own argument parsing and never appears in `OS.get_cmdline_args()`, so the bridge cannot discover it. `gd_editor_launch` sets this to the same path it passes to `--log-file`; an editor you start yourself needs both, given the same path. Unset, the two tools report `log_unavailable` rather than falling back to the game's `user://logs/godot.log`. The game role ignores it, for the reason `CONDUIT_SOCK` gives. |
 
 ## Development and CI
 

@@ -44,6 +44,7 @@ import {
 } from "./harness.ts";
 
 const RUNTIME_DIR = runtimeDir("p20");
+const EDITOR_LOG = join(RUNTIME_DIR, "editor.log");
 
 // Three counts that have to agree: four floats in the buffer, four threads per
 // work group, one group dispatched. If one of them drifts, the dispatch covers
@@ -430,6 +431,22 @@ async function computeChecks(client: Client): Promise<void> {
       : `uniform_set_create([RDShaderSource], shader, 0) -> ${JSON.stringify(wrongResult)}${wrongPrinted === "" ? "" : `; engine printed: ${wrongPrinted.split("\n")[0]}`}`,
   );
 
+  // Phase 21's claim, checked against the observation this runner already had.
+  // The message above reached the client only because this process spawned the
+  // editor and drained its pipes; an MCP client attached to a running editor
+  // cannot. gd_editor_get_errors is that client's copy, and the two must be the
+  // same message rather than merely both non-empty.
+  const clientCopy = await callJson(client, "gd_editor_get_errors", {});
+  const viaTool: string[] = clientCopy.errors ?? [];
+  const typedArrayLine = viaTool.find((line) => line.includes("TypedArray") && line.includes("RDUniform"));
+  record(
+    "the_soft_refusal_reaches_a_client_through_the_tool",
+    typedArrayLine !== undefined && wrongPrinted.includes("does not inherit from"),
+    typedArrayLine === undefined
+      ? `gd_editor_get_errors returned ${JSON.stringify(viaTool).slice(0, 200)}`
+      : `the pipe and gd_editor_get_errors carry the same refusal: ${typedArrayLine.slice(0, 110)}`,
+  );
+
   for (const rid of [setResult, pipeline.result, shader.result, buffer.result]) {
     await callJson(client, "gd_scene_node_call", { target: device, method: "free_rid", args: [rid] });
   }
@@ -451,8 +468,16 @@ async function main(): Promise<void> {
 
   console.log("\nLaunching editor on forward_plus ...");
   const editor = Bun.spawn(
-    godotCommand(godot, ["--editor", "--path", "example-project", "--rendering-method", "forward_plus"], true),
-    { cwd: repoRoot, env: conduitEnv(RUNTIME_DIR), stdout: "pipe", stderr: "pipe" },
+    godotCommand(
+      godot,
+      ["--editor", "--path", "example-project", "--rendering-method", "forward_plus", "--log-file", EDITOR_LOG],
+      true,
+    ),
+    // The pipe drain stays: it is what this runner used to prove a soft refusal
+    // with, and phase 21 is checked against it rather than replacing it. The
+    // env var is what the bridge reads, since the engine consumes --log-file
+    // before OS.get_cmdline_args() sees it (docs/api-gaps.md).
+    { cwd: repoRoot, env: conduitEnv(RUNTIME_DIR, { CONDUIT_LOG_FILE: EDITOR_LOG }), stdout: "pipe", stderr: "pipe" },
   );
   drain(editor.stdout as ReadableStream<Uint8Array> | null);
   drain(editor.stderr as ReadableStream<Uint8Array> | null);

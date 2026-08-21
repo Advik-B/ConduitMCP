@@ -172,6 +172,12 @@ export const TOOL_GROUP_BY_NAME: Record<string, ToolGroup> = {
   gd_editor_dialog_choose: "collab",
   gd_editor_ui: "collab",
   gd_editor_screenshot: "collab",
+  // The editor's observation channels sit together: the screenshot is what the
+  // editor shows, these two are what it said. Not `runtime`, which is the game
+  // group -- an editor-side diagnostic gated behind the game tools would be
+  // unreachable in exactly the deployment that slimmed the game surface away.
+  gd_editor_get_logs: "collab",
+  gd_editor_get_errors: "collab",
 
   gd_game_eval: "eval",
   gd_editor_eval: "eval",

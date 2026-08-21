@@ -47,7 +47,9 @@ Each add is one undo entry, so `gd_undo` walks the build backwards node by node.
 5. `gd_wait_frames` rather than `gd_wait_time` when the next assertion depends on it.
 6. `gd_screenshot` with a `max_dimension`, or `gd_node_get_property` and `gd_perf` when
    headless makes pixels unavailable.
-7. `gd_get_errors` before concluding anything worked.
+7. `gd_get_errors` before concluding anything worked. Its edit-time counterpart is
+   `gd_editor_get_errors`: an engine error raised by an edit-time call is printed rather than
+   raised, so the call reports success and only that tool carries the reason.
 8. `gd_stop`.
 
 ## 5. Debug at a breakpoint

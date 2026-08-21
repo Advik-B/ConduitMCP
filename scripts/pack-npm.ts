@@ -196,6 +196,7 @@ Run \`npx ${PACKAGE_NAME} --help\` for the full list; every option has a
 | \`--audit-log <path>\` | \`CONDUIT_AUDIT_LOG\` | Append a JSONL record of every tool call (off by default); \`--audit-max-bytes\` sets the rotation size. |
 | \`--timeout-ms <n>\` | \`CONDUIT_TIMEOUT_MS\` | Ordinary tool timeout, default 10000; also \`--eval-timeout-ms\` and \`--export-timeout-ms\`. |
 | \`--runtime-dir\`, \`--sock\`, \`--tcp\` | \`CONDUIT_RUNTIME_DIR\`, \`CONDUIT_SOCK\`, \`CONDUIT_TCP\` | Where the broker and bridge meet; rarely needed. |
+| | \`CONDUIT_LOG_FILE\` | Set on the *editor* process: where it writes its engine log, which is what \`gd_editor_get_errors\` reads. \`gd_editor_launch\` sets it. |
 
 Boolean variables are off when unset, empty, \`0\`, \`false\`, \`no\`, or \`off\`, and
 on for anything else. Flags with a \`--no-\` form override the variable the other
