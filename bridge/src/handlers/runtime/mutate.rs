@@ -12,7 +12,7 @@ use crate::handlers::runtime::support::{
     apply_properties, object_property_exists, optional_bool, optional_properties, optional_str,
     require_str, resolve_node, resolve_target, scene_root, scene_tree,
 };
-use crate::handlers::target::{target_response, target_spec};
+use crate::handlers::target::{target_response, target_spec, TargetSpec};
 use crate::protocol::BridgeError;
 use crate::variant_json::{
     json_to_variant, json_to_variant_typed, validate_resource_path, variant_to_json,
@@ -57,24 +57,24 @@ pub fn call_method(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     HandlerOutcome::Done((|| {
         let spec = target_spec(args)?;
         let method = require_str(args, "method")?;
-        let mut object = resolve_target(&spec)?;
-        if !object.has_method(method.as_str()) {
-            return Err(BridgeError::CallFailed(format!(
-                "{} has no method '{method}'",
-                spec.label()
-            )));
-        }
+        let call_args = crate::handlers::call::call_args(args)?;
 
-        let call_args = match args.get("args") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(json_to_variant)
-                .collect::<Result<Vec<Variant>, BridgeError>>()?,
-            Some(_) => return Err(BridgeError::InvalidArgs("'args' must be an array".into())),
+        // A class target has no receiver, so it takes the static door instead
+        // of being resolved to an object. Everything after the call is shared:
+        // the same response shape, and the same capture, which is what turns
+        // FileAccess.open into an object handle the next call can name.
+        let result = if let TargetSpec::Class(class) = &spec {
+            crate::handlers::call::call_static(class, &method, &call_args)?
+        } else {
+            let mut object = resolve_target(&spec)?;
+            if !object.has_method(method.as_str()) {
+                return Err(BridgeError::CallFailed(format!(
+                    "{} has no method '{method}'",
+                    spec.label()
+                )));
+            }
+            crate::handlers::call::call_on(&mut object, &method, &call_args)?
         };
-
-        let result = object.call(method.as_str(), &call_args);
         let mut response =
             target_response(&spec, json!({ "method": method, "result": variant_to_json(&result) }));
         crate::handles::apply_capture(args, &result, &mut response)?;

@@ -1580,6 +1580,10 @@ RenderingDevice" T1 rather than T2.
 
 ### An RID has no JSON form, so the compute pipeline stops at the device
 
+*Closed in phase 19; the paragraphs below record what phase 18 measured. The
+tagged form and its string id are under "An RID is tagged, and its id is a
+string" further down.*
+
 Every step of the compute workflow after the device exchanges RIDs:
 `storage_buffer_create`, `shader_create_from_spirv`, `uniform_set_create`, and
 `compute_pipeline_create` each return one, and the calls that consume them want
@@ -1597,6 +1601,9 @@ matrix's `### Next` rather than shipped here.
 
 ### A wrong-typed argument panics inside Object::call
 
+*Closed in phase 19, and the diagnosis below was wrong about the reason. See
+"Object::call is try_call plus a panic" for the correction.*
+
 Feeding that stringified RID back to `buffer_get_data` does not produce a typed
 error. gdext's `Object::call` panics on an argument type mismatch, the
 dispatcher's `catch_unwind` (`bridge/src/dispatcher.rs`) contains it, and the
@@ -1604,12 +1611,11 @@ client sees `internal_error: internal error: handler panicked`.
 
 The bridge stays up, so this is a reporting defect rather than a safety one, but
 it diverges from the structured error model of whitepaper section 7.4: the
-caller cannot tell a bad argument from a genuine internal fault. gdext 0.5.5
-exposes no `try_call` on `Object` to fall back to, so a fix means validating
-arguments against the method's `ClassDB` signature before dispatching. Phase 18
-is a measurement phase and did not take that on; the acceptance asserts only
-that the call *fails*, deliberately not that it fails this way, so a later fix
-to a typed error does not break the runner.
+caller cannot tell a bad argument from a genuine internal fault. Phase 18 is a
+measurement phase and did not take that on; the acceptance asserts only that the
+call *fails*, deliberately not that it fails this way, so a later fix to a typed
+error does not break the runner. That restraint paid: phase 19 changed the shape
+and the phase 18 runner needed no change for it.
 
 ### The tutorial rules had no staleClaims, and rotted for two phases
 
@@ -1646,3 +1652,175 @@ A committed corpus fixture would have made the check CI-runnable, and was
 rejected: 405 KB of heading data duplicating what `coverage-matrix.json`
 already holds, needing its own regeneration to stay honest, for a check whose
 whole purpose is catching data that drifted out of sync.
+
+## Phase 19: the static call, the RID, and the typed error
+
+### Object::call is try_call plus a panic, so no signature validator was needed
+
+Phase 18 recorded that "gdext 0.5.5 exposes no `try_call` on `Object` to fall
+back to, so a fix means validating arguments against the method's `ClassDB`
+signature before dispatching". That was wrong, and the generated bindings say so
+directly:
+
+```
+pub fn call(&mut self, method: ..., varargs: &[Variant]) -> Variant {
+    Self::try_call(self, method, varargs).unwrap_or_else(|e| panic!("{e}"))
+}
+```
+
+`try_call` is public, `ClassDb::try_class_call_static` has the same shape, and
+`meta/signature.rs` routes the engine's `GDExtensionCallError` through
+`CallError::check_out_varcall`, which maps
+`GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT` to a parameter-conversion error naming
+the index and both types. The panic phase 18 saw *was* that error, turned into a
+panic one line later.
+
+So the fix is a call-site swap, not a validator. `bridge/src/handlers/call.rs`
+holds it, and the five sites that pass caller-supplied arguments go through it:
+`gd_node_call`, `gd_scene_node_call`, `gd_resource_call`, the project-tools
+dispatch, and the navigation `map_get_path`. The engine's own words reach the
+client:
+
+```
+invalid_args: godot-rust function call failed: Object::call(&"space_is_active", [va] "not-an-rid")
+  Reason: parameter #1 -- cannot convert from STRING to RID
+```
+
+The sites whose arguments are built in Rust and cannot mismatch are deliberately
+left on `call`, `variant_json::variant_array_items` among them, where the
+comment already argues why its calls are safe.
+
+### CallError carries no public kind, so every dispatch failure is invalid_args
+
+`CallError` exposes `class_name()`, `method_name()`, and `message()`; its
+`CallErrorType` -- InvalidMethod, InvalidArgument, TooMany/TooFewArguments,
+InstanceIsNull, MethodNotConst -- has no public accessor in gdext 0.5.5, so the
+kinds cannot be told apart structurally.
+
+Mapping all of them to `invalid_args` is sound rather than lossy. A `CallError`
+is only ever a dispatch failure: a method that fails at its own work returns
+normally. Every one of the five call sites prechecks that the method exists
+before dispatching, which removes the method-existence kinds, and what remains
+is argument type and argument count. Both are `invalid_args`, and the embedded
+message names the rest. If gdext later exposes the kind, the split is a
+one-function change in `handlers/call.rs`.
+
+### An RID is tagged, and its id is a string
+
+`{"__type": "RID", "id": "458912960610304"}`, in both directions.
+`Rid::new(u64)` and `Rid::to_u64()` make the conversion trivial, and unlike an
+object an RID needs no handle table: the id is the whole of the value.
+
+The id is carried as a decimal string, not a JSON number, because an RID is
+64-bit and the broker's client is JavaScript, where `JSON.parse` silently rounds
+anything above 2^53 -- a numeric id would be corrupted before the bridge ever
+saw it. The number form is still accepted on input, the way
+`handles::parse_handle_id` accepts both `"object:3"` and `3`. The observed ids
+are well under the cliff (a physics space is around 4.6e14, a storage buffer
+around 5.1e14), so this is insurance rather than an observed failure, and it
+costs a `to_string`.
+
+A fabricated id is a new mistake this makes possible, and it is safe: the
+servers look an RID up in their owner tables, so
+`PhysicsServer2D.space_is_active({"__type":"RID","id":"12345"})` answers `false`
+with an engine error printed, rather than dereferencing anything. The phase 19
+acceptance asserts the bridge still answers afterwards rather than pinning the
+shape of the refusal.
+
+### class:<Class> reaches a static method, and resolves to no object
+
+The fourth target scheme, and the only one that names something that is not an
+object. `ClassDb::class_call_static` is the door, verified against the shipped
+surface before any code was written: `singleton:ClassDB` plus `class_call_static`
+already dispatched `FileAccess.open` through the phase 10 grammar, which is what
+licensed building the scheme rather than hoping for it.
+
+Two things were measured rather than assumed. `class_get_method_list` does
+include static methods -- `FileAccess.open` and `DirAccess.open` report flags 33
+(NORMAL|STATIC, where `MethodFlags::STATIC` is 32), against 5 for
+`FileAccess.get_as_text` and 1 for `ResourceLoader.load`, which is an instance
+method on a singleton rather than a static one. And the precheck matters as much
+as the call: naming an instance method on a class is the likely mistake, and
+dispatching blind answers it with an argument error about the class name, so the
+handler tells "instance method" from "no such method" and says which.
+
+`resolve_target` on both bridges refuses a class target with one shared message,
+so every tool that wants an object rejects it and points at `gd_classdb`. Only
+the two call tools branch before resolving.
+
+### The precheck and the dispatch agree about inherited statics
+
+`static_method_exists` reads `class_get_method_list` with inheritance included,
+and `class_call_static` is a separate engine entry point; if the two disagreed
+about a static a class inherits rather than declares, the precheck would pass a
+call the dispatch then refused, which is the worst shape an error can take.
+
+They agree. Measured across all 1510 classes in the 4.7 build: 1714 inherited
+statics are reported, almost all of them `Node.print_orphan_nodes` and
+`get_orphan_node_ids` picked up by every Node subclass, plus
+`Window.get_focused_window`. Every one dispatches on the subclass name.
+
+### Argument conversion runs before target resolution
+
+Both call handlers convert the `args` array before resolving the target, so the
+static and instance paths can share one argument list. The visible consequence
+is an ordering change in errors: a call naming a nonexistent node with a tagged
+`Resource` argument now loads that resource before reporting the target miss,
+and a tagged `Object` handle is resolved before the same.
+
+Neither conversion mutates anything and `ResourceLoader` caches, so this changes
+which error a caller sees first, not what the call does. It is recorded because
+the alternative -- resolving the target first and converting twice, once per
+branch -- would have cost the `class:` branch the shared shape that keeps
+`capture` and the response identical between the two.
+
+### FileAccess through class: is not confined to the project, deliberately
+
+`class:FileAccess` with `open` accepts a host path, so an agent can read and
+write outside `res://` and `user://`, where `gd_editor_files` and the tagged
+`Resource` form are both confined.
+
+This is consistent rather than an oversight. `singleton:OS` with `execute` has
+been in the surface since phase 10, and whitepaper section 9's trust boundary is
+explicit that the design does not defend the project against the operator's own
+agent. Confining `FileAccess` would lock one door in an open wall while costing
+the legitimate case, which is reading an asset the user points at from anywhere
+on disk.
+
+### The io page was stale in three separate ways, not one
+
+`t2:io_page` blamed 13 headings on the static-call gap. Reading the pages shows
+only some of them were behind it, and the rest had been reachable for phases:
+
+- Static factories, which phase 19 closes: `FileAccess.open`, `DirAccess.open`,
+  and also `Image.load_from_file`, `AudioStreamOggVorbis/MP3.load_from_file`,
+  and `JSON.stringify` -- each confirmed static in the 4.7 ClassDB rather than
+  assumed, and `JSON.stringify` run live through `class:JSON`.
+- Object handles, reachable since phase 16: `ZIPReader`, `ZIPPacker`,
+  `GLTFDocument`, and `GLTFState` all construct through
+  `gd_scene_object create`.
+- Singleton targeting, reachable since phase 10: `ProjectSettings.globalize_path`
+  and `localize_path` are instance methods on the singleton, not static ones,
+  and answer today, as do `OS.get_data_dir`, `get_config_dir`, and
+  `get_cache_dir` for the "Editor data paths" heading.
+
+Four headings on the page are prose rather than actions -- two page titles
+introducing `res://` and `user://`, the separator explanation, and the area
+index -- and were in the action denominator only because a page-wide backstop
+put them there.
+
+### The compute page splits again, on what a runner reaches
+
+The RID gap is closed and every helper class the pipeline needs
+(`RDShaderSource`, `RDShaderFile`, `RDUniform`, `RDShaderSPIRV`) constructs
+through `gd_scene_object create`, so the mechanism looks complete. It is graded
+on what the phase 18 runner actually reaches, which is the buffer pair:
+`storage_buffer_create` hands back a tagged RID, `buffer_get_data` spends it and
+returns 16 zero bytes, and `free_rid` spends it again.
+
+"Defining a compute pipeline" and "Execute a compute shader" stay T2, and the
+reason is now specific rather than page-wide: the SPIR-V chain (`RDShaderSource`
+to `shader_compile_spirv_from_source` to `shader_create_from_spirv`) is
+undemonstrated, and `uniform_set_create`'s first parameter is a typed
+`Array[RDUniform]` which the untyped array an `args` list builds may or may not
+satisfy -- the same typed-array asymmetry phase 16 hit from the other direction.

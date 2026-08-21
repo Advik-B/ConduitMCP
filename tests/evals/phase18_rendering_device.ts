@@ -1,14 +1,16 @@
 #!/usr/bin/env bun
 // Phase 18 live acceptance runner: what the compute-shader regrade rests on.
 //
-// Phase 18 is a measurement phase and ships no tool. It moves exactly one
-// tutorial heading out of T2 -- "Create a local RenderingDevice" -- and this
-// runner is the check behind that move. The rest of the compute page stays T2,
-// and the second half of this runner is why: the device is reachable, and
-// everything built on it exchanges RIDs, which have no JSON form.
+// Phase 18 was a measurement phase and shipped no tool. It moved exactly one
+// tutorial heading out of T2 -- "Create a local RenderingDevice" -- and the
+// first half of this runner is the check behind that move.
 //
-// Both halves matter. A runner that proved only the capture would license a
-// page-wide regrade the surface does not earn.
+// The second half used to be the other side of that grading: everything built
+// on the device exchanges RIDs, which had no JSON form, so the rest of the page
+// stayed T2. Phase 19 gave an RID a tagged form in both directions, so the same
+// two calls now run as a round trip rather than as a boundary, and the buffer
+// headings move with them. What this runner asserts changed; which claim it
+// carries did not.
 //
 // Needs a display and a RenderingDevice-based renderer. Measured, not assumed:
 // --headless forces the dummy rendering driver and
@@ -143,44 +145,54 @@ async function deviceCaptureChecks(client: Client): Promise<string | null> {
 }
 
 /**
- * Why the rest of the compute page stays T2. Every step after the device
- * exchanges RIDs: storage_buffer_create hands one back, and the pipeline,
- * uniform set, and readback calls all want one as an argument.
+ * The buffer headings, which phase 19 earned. storage_buffer_create hands back
+ * an RID and buffer_get_data wants one, so this pair is the smallest complete
+ * statement of the exchange the whole compute workflow is built on.
  *
- * variant_to_json has no RID form and stringifies, so the value that comes back
- * is a display string. Feeding it to a method that wants a RID is asserted to
- * fail rather than to fail in a particular way: it currently surfaces as
- * internal_error because gdext's Object::call panics on an argument type
- * mismatch and the dispatcher's catch_unwind contains it (docs/api-gaps.md).
- * Pinning that shape here would enshrine the defect.
+ * The readback is what makes it a round trip rather than two calls that each
+ * happened to succeed: a freshly created 16-byte storage buffer reads back as
+ * 16 zero bytes, so the RID that came out of the first call is proven to name
+ * the buffer the second call read.
+ *
+ * The steps beyond this pair -- shader_create_from_spirv, uniform_set_create,
+ * compute_pipeline_create, and the compute list -- are not exercised here, and
+ * are graded on what this runner reaches rather than on what the mechanism
+ * suggests.
  */
-async function ridBoundaryChecks(client: Client, handle: string): Promise<void> {
-  console.log("\nThe RID boundary ...");
+async function ridRoundTripChecks(client: Client, handle: string): Promise<void> {
+  console.log("\nThe RID round trip ...");
 
   const buffer = await callJson(client, "gd_scene_node_call", {
     target: handle,
     method: "storage_buffer_create",
     args: [16],
   });
-  const rid = buffer.result;
+  const rid = buffer.result as { __type?: string; id?: unknown };
   record(
-    "a_returned_rid_only_stringifies",
-    typeof rid === "string" && rid.startsWith("RID("),
+    "a_returned_rid_is_tagged",
+    rid?.__type === "RID" && typeof rid.id === "string" && /^\d+$/.test(rid.id),
     `storage_buffer_create(16) -> ${JSON.stringify(rid)}`,
   );
+  if (rid?.__type !== "RID") {
+    return;
+  }
 
-  const spent = await callRaw(client, "gd_scene_node_call", {
+  const read = await callJson(client, "gd_scene_node_call", {
     target: handle,
     method: "buffer_get_data",
     args: [rid],
   });
+  const bytes = Array.isArray(read.result) ? (read.result as number[]) : null;
   record(
-    "a_stringified_rid_cannot_be_spent",
-    spent.isError,
-    spent.isError
-      ? `buffer_get_data(${JSON.stringify(rid)}) refused: ${spent.text}`
-      : `buffer_get_data unexpectedly succeeded: ${spent.text}`,
+    "a_returned_rid_can_be_spent",
+    bytes !== null && bytes.length === 16 && bytes.every((b) => b === 0),
+    bytes === null
+      ? `buffer_get_data returned ${JSON.stringify(read.result)}`
+      : `buffer_get_data(rid) -> ${bytes.length} bytes, all zero: ${bytes.every((b) => b === 0)}`,
   );
+
+  await callJson(client, "gd_scene_node_call", { target: handle, method: "free_rid", args: [rid] });
+  record("a_spent_rid_can_be_freed", true, `free_rid(${rid.id}) returned`);
 }
 
 /**
@@ -256,7 +268,7 @@ async function main(): Promise<void> {
     await assertEvalIsGone(client);
     const handle = await deviceCaptureChecks(client);
     if (handle !== null) {
-      await ridBoundaryChecks(client, handle);
+      await ridRoundTripChecks(client, handle);
     }
   } finally {
     await client?.close().catch(() => {});

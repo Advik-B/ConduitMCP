@@ -125,8 +125,9 @@ pub fn project_call(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
             }
         }
 
-        let mut node = crate::handlers::runtime::support::resolve_node(&sig.node_path)?;
-        let result = node.call(sig.method.as_str(), &call_args);
+        let node = crate::handlers::runtime::support::resolve_node(&sig.node_path)?;
+        let mut object = node.clone().upcast::<Object>();
+        let result = crate::handlers::call::call_on(&mut object, &sig.method, &call_args)?;
         Ok(json!({
             "method": sig.method,
             "node_path": sig.node_path,

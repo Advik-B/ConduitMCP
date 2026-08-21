@@ -107,12 +107,12 @@ export function registerEditorSceneTools(server: McpServer, manager: BridgeManag
 
   editorTool(
     "gd_scene_node_call",
-    "Call a method on an edited-scene node or an engine singleton and return its result. The edit-time counterpart of gd_node_call, reaching TileMapLayer.set_cell and NavigationRegion3D.bake_navigation_mesh. NOT undo-wrapped: a method call has no inverse, so gd_undo cannot revert it. Follow a mutating call with gd_scene_save.",
+    "Call a method on an edited-scene node, an engine singleton, or a class, and return its result. The edit-time counterpart of gd_node_call, reaching TileMapLayer.set_cell. 'class:<Class>' calls a static method such as FileAccess.open. NOT undo-wrapped: a method call has no inverse, so gd_undo cannot revert it. Follow a mutating call with gd_scene_save.",
     {
-      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings, or 'object:<n>' for a handle held by gd_scene_object.").optional(),
+      target: z.string().describe("Path relative to the edited scene root ('.' for the root), or 'singleton:<Class>' for an engine singleton such as singleton:ProjectSettings, or 'object:<n>' for a handle held by gd_scene_object, or 'class:<Class>' for a static method such as class:FileAccess with method open. gd_classdb methods reports which methods are static.").optional(),
       node_path: z.string().describe("Path relative to the edited scene root. Legacy alias for target; pass one or the other, not both.").optional(),
       method: z.string().describe("Method name to call."),
-      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types. An object handle is {\"__type\":\"Object\",\"handle\":\"object:3\"}.").optional(),
+      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types. An object handle is {\"__type\":\"Object\",\"handle\":\"object:3\"}; a server RID is {\"__type\":\"RID\",\"id\":\"458912960610304\"}, exactly as one is returned.").optional(),
       capture: z.boolean().describe("Take an object handle on the returned value, if it is an object, and report it as handle.").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },

@@ -89,6 +89,12 @@ pub fn set_property(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
                 object.set(property.as_str(), &variant);
                 None
             }
+            // Unreachable: resolve_editor_target above refuses a class target,
+            // so this arm exists to keep the refusal explicit rather than to
+            // let a later change fall into the singleton branch by default.
+            TargetSpec::Class(name) => {
+                return Err(crate::handlers::target::class_target_is_not_an_object(name))
+            }
         };
 
         canonicalise(
@@ -124,24 +130,23 @@ pub fn call_method(args: &Value, _ctx: &FrameContext) -> HandlerOutcome {
     HandlerOutcome::Done((|| {
         let spec = target_spec(args)?;
         let method = require_str(args, "method")?;
-        let mut object = resolve_editor_target(&spec)?;
-        if !object.has_method(method.as_str()) {
-            return Err(BridgeError::CallFailed(format!(
-                "'{}' has no method '{method}'",
-                spec.label()
-            )));
-        }
+        let call_args = crate::handlers::call::call_args(args)?;
 
-        let call_args = match args.get("args") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(json_to_variant)
-                .collect::<Result<Vec<Variant>, BridgeError>>()?,
-            Some(_) => return Err(BridgeError::InvalidArgs("'args' must be an array".into())),
+        // The class arm mirrors the game bridge exactly. Both processes carry a
+        // ClassDB, so a static call means the same thing on either, and only
+        // the handle table it captures into differs.
+        let result = if let TargetSpec::Class(class) = &spec {
+            crate::handlers::call::call_static(class, &method, &call_args)?
+        } else {
+            let mut object = resolve_editor_target(&spec)?;
+            if !object.has_method(method.as_str()) {
+                return Err(BridgeError::CallFailed(format!(
+                    "'{}' has no method '{method}'",
+                    spec.label()
+                )));
+            }
+            crate::handlers::call::call_on(&mut object, &method, &call_args)?
         };
-
-        let result = object.call(method.as_str(), &call_args);
         let mut response = canonicalise(
             &spec,
             target_response(

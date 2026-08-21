@@ -201,23 +201,17 @@ pub fn call_method(args: &Value, ctx: &FrameContext) -> HandlerOutcome {
         let method = require_str(args, "method")?;
         let save = args.get("save").and_then(Value::as_bool).unwrap_or(true);
 
-        let mut resource = load_resource(&path)?;
+        let resource = load_resource(&path)?;
         if !resource.has_method(method.as_str()) {
             return Err(BridgeError::CallFailed(format!(
                 "resource at '{path}' has no method '{method}'"
             )));
         }
 
-        let call_args = match args.get("args") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(json_to_variant)
-                .collect::<Result<Vec<Variant>, BridgeError>>()?,
-            Some(_) => return Err(BridgeError::InvalidArgs("'args' must be an array".into())),
-        };
+        let call_args = crate::handlers::call::call_args(args)?;
 
-        let result = resource.call(method.as_str(), &call_args);
+        let mut object = resource.clone().upcast::<Object>();
+        let result = crate::handlers::call::call_on(&mut object, &method, &call_args)?;
         if save {
             let save_err = ResourceSaver::singleton().save(&resource);
             if save_err != GdError::OK {

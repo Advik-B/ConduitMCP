@@ -50,6 +50,11 @@ pub fn resolve_target(spec: &TargetSpec) -> Result<Gd<Object>, BridgeError> {
         TargetSpec::Node(path) => Ok(resolve_node(path)?.upcast()),
         TargetSpec::Singleton(name) => resolve_singleton(name),
         TargetSpec::Object(id) => crate::handles::resolve(*id),
+        // A class is not an object, so there is nothing to resolve. Every tool
+        // that reaches an object through this function refuses a `class:`
+        // target here rather than each one growing its own check; the two call
+        // tools branch on the spec before they get this far.
+        TargetSpec::Class(name) => Err(crate::handlers::target::class_target_is_not_an_object(name)),
     }
 }
 

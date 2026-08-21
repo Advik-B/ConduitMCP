@@ -578,17 +578,19 @@ const T2_RULES: SectionRule[] = [
     ],
   },
   {
-    // Narrowed in phase 14. The old match claimed every heading that mentioned
-    // a shader, on the strength of "shader source has no create-and-validate
-    // path". That stopped being true when gd_resource_set_property could write
-    // Shader.code and gd_shader_validate could compile it. What is genuinely
-    // left is the compute pipeline, which needs a RenderingDevice, and a
-    // RenderingDevice only ever arrives as the return value of a call.
-    id: "t2:renderingdevice",
-    kind: "action",
-    tier: "T2",
-    via: "a passing mention of RenderingDevice outside the compute tutorial; same RID gap, reached by keyword rather than by page",
-    match: ["renderingdevice", "compute pipeline"],
+    // Narrowed in phase 14, and corrected in phase 19. Phase 14 cut it down to
+    // the compute pipeline and rested the T2 on the RID gap; phase 19 closed
+    // that gap, and reading the one heading this rule still won shows it never
+    // went through a RID at all. It sits under Introduction on the renderers
+    // page and explains which renderer runs on which driver. The action beside
+    // it, choosing a renderer, is a project setting and is already graded as
+    // one by t0:project_settings on the next heading down.
+    id: "concept:renderer_layers",
+    kind: "concept",
+    tier: "T0",
+    via: "renderer and driver architecture prose, not an action",
+    pages: ["tutorials/rendering/renderers"],
+    match: ["renderers, rendering drivers"],
   },
   {
     // Narrowed in phase 15, in the sense that everything above it now catches
@@ -944,10 +946,66 @@ const RESIDUE_RULES: SectionRule[] = [
     match: [""],
   },
   {
-    id: "t2:io_page",
+    // The static-call cluster, and the reason phase 19 exists. FileAccess and
+    // DirAccess were always RefCounted, so gd_object could build one; what was
+    // missing is that open() is static, so the instance a handle held was never
+    // an open file. class:<Class> closes that, and the same door opens the
+    // other static factories this page turns on: Image.load_from_file,
+    // AudioStreamOggVorbis/MP3.load_from_file, and JSON.stringify, each
+    // confirmed static in 4.7 rather than assumed.
+    id: "t1:io_static_factory",
     kind: "action",
-    tier: "T2",
-    via: "FileAccess and DirAccess are RefCounted, so gd_object create accepts them, but open() is static and the target grammar names no class for a static call, so the instance a handle holds is never an open file",
+    tier: "T1",
+    via: "gd_node_call / gd_scene_node_call with target: class:<Class> for a static method -- FileAccess.open and DirAccess.open (phase 19 acceptance), Image.load_from_file, AudioStream*.load_from_file, JSON.stringify -- with capture naming the object that comes back",
+    pages: ["tutorials/io"],
+    match: [
+      "accessing persistent user data",
+      "images",
+      "audio/video files",
+      "serializing",
+    ],
+  },
+  {
+    // Reachable since phase 16, and the page-wide rule went on calling it
+    // unreachable for three phases. Both pairs are RefCounted and both
+    // construct through gd_scene_object create, checked rather than inferred.
+    id: "t1:io_object_handle",
+    kind: "action",
+    tier: "T1",
+    via: "gd_object / gd_scene_object create builds ZIPReader, ZIPPacker, GLTFDocument, and GLTFState, and gd_node_call drives them from the handle",
+    pages: ["tutorials/io"],
+    match: ["3d scenes", "zip archives"],
+  },
+  {
+    // Reachable since phase 10. globalize_path is an instance method on the
+    // ProjectSettings singleton, not a static one, and answers today: it was
+    // never behind the gap the old rule named.
+    id: "t1:io_path_query",
+    kind: "action",
+    tier: "T1",
+    via: "gd_node_call / gd_scene_node_call with target: singleton:ProjectSettings for globalize_path and localize_path, and singleton:OS for get_data_dir, get_config_dir, and get_cache_dir",
+    pages: ["tutorials/io"],
+    match: ["converting paths to absolute", "editor data paths"],
+  },
+  {
+    // Groups are how the page picks what to save, and both bridges search by
+    // group already.
+    id: "t1:io_persist_group",
+    kind: "action",
+    tier: "T1",
+    via: "gd_node_query / gd_scene_node_query find the nodes in a group, and gd_wiring adds a persistent one",
+    pages: ["tutorials/io"],
+    match: ["identify persistent objects"],
+  },
+  {
+    // What is left on tutorials/io once the actions above are taken: the two
+    // page titles that introduce res:// and user://, the separator prose, and
+    // the area index. None of them is an action, and grading them as one put
+    // prose in the denominator.
+    id: "concept:io_paths",
+    kind: "concept",
+    tier: "T0",
+    via: "path notation and area index prose, not actions",
     pages: ["tutorials/io"],
     match: [""],
   },
@@ -1163,10 +1221,29 @@ const PHASE14_RULES: SectionRule[] = [
     match: ["create a local renderingdevice"],
   },
   {
+    // The buffer half of the page, which the phase 19 RID form earned and the
+    // phase 18 runner now measures: storage_buffer_create hands back a tagged
+    // RID, buffer_get_data spends it and reads the bytes, and free_rid spends
+    // it again.
+    id: "t1:compute_buffer",
+    kind: "action",
+    tier: "T1",
+    via: "gd_scene_node_call on the captured RenderingDevice handle: storage_buffer_create returns {__type:RID}, buffer_get_data and free_rid take one back (phase 18 acceptance, rerun after phase 19)",
+    pages: ["tutorials/shaders/compute_shaders"],
+    match: ["provide input data", "retrieving results", "freeing memory"],
+  },
+  {
+    // What is left, and why it is left. The RID gap the previous rule named is
+    // closed, and RDShaderSource, RDShaderFile, RDUniform, and RDShaderSPIRV
+    // all construct through gd_scene_object create -- so the remaining doubt is
+    // not a missing mechanism but an unmeasured one: the SPIR-V compile chain
+    // and uniform_set_create, whose first argument is a typed Array[RDUniform]
+    // that the untyped array an args list builds may or may not satisfy.
+    // Graded on what a runner reaches, not on what the mechanism suggests.
     id: "t2:compute_shader",
     kind: "action",
     tier: "T2",
-    via: "the device itself is reachable by handle since phase 16, but every step built on it exchanges RIDs -- storage_buffer_create and friends return an RID, which has no JSON form and stringifies, so no later call can spend one (docs/api-gaps.md)",
+    via: "the RID gap is closed and every RD* helper class constructs by handle, but the SPIR-V chain (RDShaderSource -> shader_compile_spirv_from_source -> shader_create_from_spirv) and uniform_set_create's typed Array[RDUniform] argument are undemonstrated (docs/api-gaps.md)",
     pages: ["tutorials/shaders/compute_shaders"],
     match: [""],
   },

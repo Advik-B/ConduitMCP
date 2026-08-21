@@ -178,7 +178,15 @@ fn list_methods(class: &str, no_inheritance: bool) -> Vec<Value> {
                     }
                 })
                 .unwrap_or_else(|| "void".to_string());
-            json!({ "name": dict_str(&dict, "name"), "return_type": return_type, "args": args_json(&dict) })
+            // `static` is what makes the `class:<Class>` target scheme
+            // discoverable: it is the one bit that says whether a method can be
+            // called without an instance.
+            json!({
+                "name": dict_str(&dict, "name"),
+                "return_type": return_type,
+                "args": args_json(&dict),
+                "static": crate::handlers::call::method_dict_is_static(&dict),
+            })
         })
         .collect()
 }

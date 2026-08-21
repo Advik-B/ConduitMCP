@@ -23,6 +23,7 @@ tool's own schema description, which is the authority. This file is a map, not a
 - [Editor collaboration (collab)](#editor-collaboration-collab)
 - [Reflection (classdb)](#reflection-classdb)
 - [Object handles (object)](#object-handles-object)
+- [Static calls and RIDs](#static-calls-and-rids)
 - [Evaluation (eval)](#evaluation-eval)
 - [Pixel fallback (pixel)](#pixel-fallback-pixel)
 - [Project-defined tools](#project-defined-tools)
@@ -189,7 +190,7 @@ These keep a watching human oriented, and recover a session from a modal dialog.
 
 | Tool | Bridge | What it does |
 | --- | --- | --- |
-| `gd_classdb` | editor | Engine class reflection: `list_classes`, `class_info`, `properties`, `methods`, `signals`, `constants`, `enums`, `parents`, `exists`. Always routed to the editor, even for questions about the game. |
+| `gd_classdb` | editor | Engine class reflection: `list_classes`, `class_info`, `properties`, `methods`, `signals`, `constants`, `enums`, `parents`, `exists`. `methods` reports `static` per method, which is what tells you whether `class:<Class>` can call it. Always routed to the editor, even for questions about the game. |
 
 Use this instead of recalling an API from memory. It answers from the exact engine build in use.
 
@@ -220,6 +221,46 @@ released or the process exits; 64 per bridge, and minting past that is refused
 rather than silently evicting one you still hold. A handle to a manually
 managed object that something else freed reports `object_not_found` on use and
 `valid: false` in `list`.
+
+## Static calls and RIDs
+
+`target: "class:FileAccess"` on `gd_node_call` or `gd_scene_node_call` calls a
+**static** method, where there is no instance to name. This is how you open a
+file or a directory: `FileAccess.open` and `DirAccess.open` are static, so no
+handle could exist before you call them.
+
+```
+gd_node_call target="class:FileAccess" method="open"
+             args=["user://save.dat", 2] capture=true
+  -> handle "object:4", then store_string / close on that handle
+```
+
+`2` is `FileAccess.WRITE`; `1` is `READ`. The same door reaches
+`Image.load_from_file`, `AudioStreamOggVorbis.load_from_file`,
+`AudioStreamMP3.load_from_file`, and `JSON.stringify`. Use
+`gd_classdb methods` to check `static` before guessing: naming an instance
+method through `class:` is refused, with a message saying to get an instance
+first.
+
+Only the two call tools accept a `class:` target. Everything else that takes
+`target` wants an object, and refuses a class by pointing you at `gd_classdb`.
+
+A server handle (`RID`) is a value, not a target. It arrives and is spent as
+`{"__type": "RID", "id": "458912960610304"}` -- the id is a decimal **string**,
+because an RID is 64-bit and a JSON number would lose precision. Pass it back
+verbatim in an `args` array:
+
+```
+gd_node_call target="singleton:PhysicsServer2D" method="space_create"
+  -> {"__type":"RID","id":"459467011391488"}
+gd_node_call target="singleton:PhysicsServer2D" method="space_set_active"
+             args=[{"__type":"RID","id":"459467011391488"}, true]
+```
+
+This is what makes `PhysicsServer2D/3D`, `NavigationServer2D/3D`, and a captured
+`RenderingDevice` drivable generically. A wrong-typed argument to any dynamic
+call now reports `invalid_args` naming the parameter and both types, rather than
+an internal error.
 
 ## Evaluation (eval)
 

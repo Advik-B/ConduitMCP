@@ -343,6 +343,41 @@ connects live and reports \`persisted: false, undoable: false\`, for the reason
 And runtime resource signals stay T2 with the rest of the runtime resource row,
 for the reason given above -- the editor row is what carries them.
 
+### Closed: a static method, and a correction to the grading above
+
+The five verbs all act on an instance, and the tables above assume every member
+is reached that way: an \`object\`-kind class grades T1 \`via gd_node_call
+(target: object:...)\`, whatever the member is. For a static method that was not
+achievable. \`FileAccess.open\` is the case that shows it -- the handle the via
+names could only be obtained by calling \`open\`, which is the method being
+graded. The tier was right and the reason was circular.
+
+\`class:<Class>\` is the fourth target scheme and it makes the grading true.
+\`ClassDb::class_call_static\` is the door, the two call tools branch on it before
+resolving anything, and \`capture\` on the result is what turns a static factory
+into an \`object:<n>\` the next call can name. No number in the class-reference
+tables moves, because none was ever wrong; what moves is that the via now
+describes something a caller can actually do.
+
+One inaccuracy is left rather than hidden: the per-member via strings still say
+\`target: object:...\` for static methods, because the documentation extractor
+carries no staticness flag and adding one is a change to
+\`extract-docs.ts\` rather than to a rule. \`gd_classdb methods\` reports
+\`static\` per method from the live ClassDB, which is where a caller should look.
+
+### Closed: an RID crosses the wire
+
+Not a target scheme -- an RID names nothing the grammar could resolve -- but the
+same class of gap: a value the wire could not carry. \`variant_json.rs\` had no
+RID case, so a server handed one back as the display string \`RID(...)\` and no
+later call could spend it. It is now tagged in both directions, with the id as a
+decimal string because an RID is 64-bit and \`JSON.parse\` rounds above 2^53.
+
+This is what the physics and rendering servers were missing. \`gd_physics\`
+wraps the world gravity read as a dedicated op precisely because the space RID
+could not be named; the phase 19 acceptance now reaches the same number
+generically and asserts the two agree.
+
 ## Capabilities the whitepaper specifies that are not implemented
 
 Section 8 of the whitepaper is the parity target. These items appear there and do
@@ -583,20 +618,97 @@ dead \`t0:screenshot\` rule on its first run. Both guards live inside a
 regeneration, which is the step an LFS-conscious phase skips, so
 \`bun run coverage:check\` runs them and the tier summary and writes nothing.
 
+**Phase 19: the static call, the RID, and the typed error.** All three items the
+last \`### Next\` named, taken together because they sit on one call path and
+each would have made the others worse alone.
+
+\`class:<Class>\` is the fourth target scheme, and the only one that resolves to
+no object. \`gd_node_call\` and \`gd_scene_node_call\` branch on it and go through
+\`ClassDb::class_call_static\`; every other target-taking tool refuses it with one
+shared message pointing at \`gd_classdb\`. An RID is now tagged in both
+directions. The typed error is the reason the other two are usable at all: a
+scheme that lets a caller name a class and fabricate an RID id creates two new
+ways to pass a wrong argument, and both used to reach the client as
+\`internal_error: handler panicked\`.
+
+*Accepted* by \`bun run phase19\`, headless on both bridges, the editor half with
+\`--disable-eval\`: \`class:FileAccess\` opens a file for writing and \`capture\`
+names the \`FileAccess\` it returns, a second open reads back what the handle
+wrote, \`class:DirAccess\` makes a directory that \`dir_exists\` then finds, an
+instance method named through \`class:\` is refused as one rather than
+dispatched, \`PhysicsServer2D.space_create\` hands back a tagged RID that
+\`space_set_active\`, \`space_is_active\`, and \`free_rid\` each spend, and a string
+where a method wants an RID comes back \`invalid_args\` naming the parameter and
+both types. The game half repeats the static call and reads the world's space
+RID off a captured \`World2D\`, then cross-checks \`area_get_param\` against
+\`gd_physics world_get\`: 980 both ways. Physics is real under \`--headless\` where
+rendering is not, so the runner is in \`ci:phases\`.
+
+The phase 18 runner is the second acceptance, extended rather than replaced. Its
+RID half asserted a boundary -- a stringified RID, and a call that refuses it --
+and both are now false, so it asserts the round trip instead:
+\`storage_buffer_create(16)\` returns a tagged RID and \`buffer_get_data\` reads 16
+zero bytes back. It stays out of \`ci:phases\` for the reason it always was.
+
+Four things were measured rather than assumed, two of them before any code was
+written. \`ClassDB.class_call_static\` really does dispatch \`FileAccess.open\`,
+checked through \`singleton:ClassDB\` on the shipped surface, so the scheme was
+known to work before it existed; and \`class_get_method_list\` really does include
+static methods, which the STATIC precheck depends on -- \`FileAccess.open\`
+reports flags 33 against 5 for \`FileAccess.get_as_text\`. gdext exposes no public
+accessor for \`CallError\`'s kind, so every dispatch failure maps to
+\`invalid_args\`, which is sound because the \`has_method\` precheck above each
+call site removes the method-existence kinds. And a fabricated RID id is safe:
+the servers look one up in an owner table, so \`space_is_active\` on a made-up id
+answers \`false\` rather than dereferencing (\`docs/api-gaps.md\`).
+
+The correction is the same shape as phase 18's. \`docs/api-gaps.md\` recorded that
+gdext 0.5.5 exposes no \`try_call\`, and that a typed error therefore needed a
+ClassDB signature validator. The generated bindings say otherwise:
+\`Object::call\` is \`try_call(...)\` with \`unwrap_or_else(|e| panic!("{e}"))\` after
+it, so the panic phase 18 saw *was* the typed error, one line before it was
+thrown away. Five call sites swapped, no validator.
+
+The tutorial regrade is the phase 14 and 18 shape a third time. \`t2:io_page\`
+blamed 13 headings on the static-call gap, and reading the pages shows three
+different mechanisms: the static factories phase 19 closes (with \`Image\`,
+\`AudioStream*\`, and \`JSON\` beside \`FileAccess\` and \`DirAccess\`, each confirmed
+static rather than assumed), object handles that have worked since phase 16
+(\`ZIPReader\`, \`ZIPPacker\`, \`GLTFDocument\`, \`GLTFState\`), and singleton
+targeting that has worked since phase 10 (\`ProjectSettings.globalize_path\`,
+\`OS.get_data_dir\`) -- all of them run live rather than inferred. Four headings
+on that page were prose sitting in the action denominator.
+\`t2:renderingdevice\` was stale for the same reason, and the one heading it still
+won turns out to be architecture prose that never touched an RID. The compute
+page splits rather than flipping, again: the buffer pair is earned, the SPIR-V
+chain is not.
+
 ### Next
 
-Nothing in the class reference, and this is now measured rather than projected.
-The five generic verbs are shipped, the best-of-both and editor rows read 0 at
-T2, and the runtime row's 3460 are all resource members -- the runtime-resource
-conditional described above, which is a grading rather than a gap.
+Nothing in the class reference, and nothing behind a naming gap: five generic
+verbs, four target schemes, and a value form for the one thing that is neither an
+object nor a name.
 
-The strongest remaining candidate is a static-call scheme. \`FileAccess\`,
-\`DirAccess\`, and \`ResourceLoader\`-style factories are reached through static
-methods on a class, and the target grammar names instances only, so
-\`t2:io_page\`'s 13 headings sit behind a grammar gap rather than a missing tool.
-Two smaller ones sit next to it: an RID scheme would unblock the six compute
-headings above, and the panic that a wrong-typed argument currently produces
-should be a typed error first, since both would be spent on the same call path.
+The clearest remaining item is small and specific. \`uniform_set_create\` takes a
+typed \`Array[RDUniform]\`, and an \`args\` list builds an untyped \`Array\`; whether
+the engine accepts one for the other is undemonstrated, and it is the last thing
+between the compute page's three remaining headings and T1. It is the same typed
+array asymmetry phase 16 met from the reading side, where gdext refused to
+convert \`Array[Node]\` into \`Array<Variant>\`. One runner answers it either way.
+
+Two smaller ones. The per-member via strings in the class-reference tables say
+\`target: object:...\` for static methods, which \`class:<Class>\` has made merely
+imprecise rather than wrong; fixing it means teaching \`extract-docs.ts\` to read
+the \`static\` marker. And \`CallError\`'s kind is not public in gdext 0.5.5, so
+every dispatch failure reports \`invalid_args\`; if a later gdext exposes it, the
+split is one function.
+
+What is left in the tutorials is not a naming problem. The largest clusters are
+\`t2:gettext\` (31 headings, an editor menu action with no scripted entry point),
+\`t2:plugin_authoring\` (27, writing plugin code rather than driving the editor),
+\`t2:tilemap_editor_page\` (13, paint tools with no semantic equivalent), and
+\`t2:custom_draw\` (15 across two rules, arbitrary \`_draw()\` work that needs a
+script). Each is a tool decision rather than a grammar one.
 
 XR is deliberately absent from this list. It needs hardware and a runtime the
 bridge cannot simulate, and the honest answer is to say so rather than to ship a

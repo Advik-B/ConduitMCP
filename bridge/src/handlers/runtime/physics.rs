@@ -275,10 +275,11 @@ fn nav_path(args: &Value, two_d: bool) -> Result<Value, BridgeError> {
             to_vector3(require_field(args, "to")?)?.to_variant(),
         )
     };
-    let result = server.call(
+    let result = crate::handlers::call::call_on(
+        &mut server,
         "map_get_path",
         &[map.to_variant(), from, to, optimize.to_variant()],
-    );
+    )?;
     let points: Vec<Value> = if two_d {
         result
             .try_to::<PackedVector2Array>()

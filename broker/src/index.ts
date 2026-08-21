@@ -352,12 +352,12 @@ export function registerTools(server: McpServer, manager: BridgeManager, events:
 
   gameTool(
     "gd_node_call",
-    "Call a method on a live node or an engine singleton with converted arguments, and return its result. 'singleton:<Class>' reaches OS, Time, Input, RenderingServer, PhysicsServer3D, and every other engine singleton without eval.",
+    "Call a method on a live node, an engine singleton, or a class with converted arguments, and return its result. 'singleton:<Class>' reaches OS, Time, Input, RenderingServer, PhysicsServer3D, and every other engine singleton without eval; 'class:<Class>' calls a static method, which is how FileAccess.open and DirAccess.open are reached.",
     {
-      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:RenderingServer, or 'object:<n>' for a handle held by gd_object.").optional(),
+      target: z.string().describe("Node path, or 'singleton:<Class>' for an engine singleton such as singleton:RenderingServer, or 'object:<n>' for a handle held by gd_object, or 'class:<Class>' for a static method such as class:FileAccess with method open. gd_classdb methods reports which methods are static.").optional(),
       node_path: z.string().describe("Absolute path to the node. Legacy alias for target; pass one or the other, not both.").optional(),
       method: z.string().describe("Method name to call."),
-      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types. An object handle is {\"__type\":\"Object\",\"handle\":\"object:3\"}.").optional(),
+      args: z.array(z.any()).describe("Positional arguments; plain JSON or tagged Godot types. An object handle is {\"__type\":\"Object\",\"handle\":\"object:3\"}; a server RID is {\"__type\":\"RID\",\"id\":\"458912960610304\"}, exactly as one is returned.").optional(),
       capture: z.boolean().describe("Take an object handle on the returned value, if it is an object, and report it as handle. Reaches objects no path names, such as a space state.").optional(),
     },
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },

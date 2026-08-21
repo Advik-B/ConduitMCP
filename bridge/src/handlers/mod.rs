@@ -15,6 +15,7 @@ use crate::dispatcher::{FrameContext, HandlerOutcome, PendingOp};
 use crate::protocol::BridgeError;
 
 pub mod args;
+pub mod call;
 pub mod classdb;
 pub mod editor;
 pub mod node_query;

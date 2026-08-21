@@ -10,10 +10,17 @@
 //! `node_path` still works and means exactly what it always did. `target` is
 //! additive, so no existing call, test, or eval snippet changes behaviour.
 //!
-//! Three schemes exist. A bare string is a node path; `singleton:<Class>` is an
+//! Four schemes exist. A bare string is a node path; `singleton:<Class>` is an
 //! engine singleton; `object:<n>` is a live object held by handle in this
 //! bridge process (`crate::handles`), which is what reaches the objects that
-//! have no stable name at all.
+//! have no stable name at all; and `class:<Class>` names a class rather than
+//! any instance, for a static method.
+//!
+//! `class:` is the odd one, and deliberately so. The other three resolve to an
+//! object; this one cannot, because a static method has no receiver. It is a
+//! target scheme rather than a separate argument because the alternative is a
+//! second grammar for naming the same classes the other schemes already name,
+//! and the tools that cannot use it say so instead of silently ignoring it.
 //!
 //! Parsing is engine-free and unit-tested here; resolution touches the engine
 //! and lives with the bridge that owns the tree (`runtime::support` walks the
@@ -30,6 +37,11 @@ use crate::protocol::BridgeError;
 /// grammar stays one string, which is what keeps the schema one field.
 const SINGLETON_PREFIX: &str = "singleton:";
 
+/// The `class:` scheme, for a static method call. Named for what it holds --
+/// a class -- rather than for the one operation it supports, to stay in the
+/// family of `singleton:` and `object:`.
+const CLASS_PREFIX: &str = "class:";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetSpec {
     /// A node path, interpreted by whichever bridge resolves it.
@@ -40,6 +52,10 @@ pub enum TargetSpec {
     /// The third scheme, and the one that reaches objects with no name at all:
     /// `SurfaceTool`, `PhysicsDirectSpaceState3D`, an unsaved resource.
     Object(u64),
+    /// A class by name, for a static method call. Resolves to no object:
+    /// `FileAccess.open` and `DirAccess.open` are the reason it exists, since
+    /// nothing can hold a `FileAccess` until `open` has handed one back.
+    Class(String),
 }
 
 impl TargetSpec {
@@ -49,8 +65,19 @@ impl TargetSpec {
             TargetSpec::Node(path) => path.clone(),
             TargetSpec::Singleton(name) => format!("{SINGLETON_PREFIX}{name}"),
             TargetSpec::Object(id) => crate::handles::format_handle(*id),
+            TargetSpec::Class(name) => format!("{CLASS_PREFIX}{name}"),
         }
     }
+}
+
+/// Why a `class:` target is refused by every tool but the two call tools.
+///
+/// One message in one place, because both bridges' `resolve_target` reject it
+/// and a pair that drifted apart would be worse than the gap it explains.
+pub fn class_target_is_not_an_object(name: &str) -> BridgeError {
+    BridgeError::InvalidArgs(format!(
+        "'{CLASS_PREFIX}{name}' names a class, not an object, so only a static method call accepts it. Use gd_node_call or gd_scene_node_call to call a static method such as {name}.open, and capture the object it returns; use gd_classdb to inspect the class itself"
+    ))
 }
 
 /// Parse a `target` string. Anything without a recognised scheme prefix is a
@@ -59,6 +86,15 @@ impl TargetSpec {
 pub fn parse_target(target: &str) -> Result<TargetSpec, BridgeError> {
     if let Some(handle) = target.strip_prefix(crate::handles::HANDLE_PREFIX) {
         return Ok(TargetSpec::Object(crate::handles::parse_handle_id(handle)?));
+    }
+    if let Some(name) = target.strip_prefix(CLASS_PREFIX) {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(BridgeError::InvalidArgs(
+                "'target' class name is empty; expected for example 'class:FileAccess'".into(),
+            ));
+        }
+        return Ok(TargetSpec::Class(name.to_string()));
     }
     if let Some(name) = target.strip_prefix(SINGLETON_PREFIX) {
         let name = name.trim();
@@ -105,7 +141,7 @@ pub fn target_spec_named(
         (Some(target), None) => parse_target(&target),
         (None, Some(path)) => Ok(TargetSpec::Node(path)),
         (None, None) => Err(BridgeError::InvalidArgs(format!(
-            "'{grammar_field}' is required (a node path, 'singleton:<Class>', or 'object:<n>')"
+            "'{grammar_field}' is required (a node path, 'singleton:<Class>', 'object:<n>', or 'class:<Class>' for a static call)"
         ))),
     }
 }
@@ -228,8 +264,25 @@ mod tests {
     }
 
     #[test]
+    fn the_class_scheme_is_recognised_and_trimmed() {
+        assert_eq!(parse_target("class:FileAccess").unwrap(), TargetSpec::Class("FileAccess".into()));
+        assert_eq!(parse_target("class: DirAccess ").unwrap(), TargetSpec::Class("DirAccess".into()));
+        assert_eq!(parse_target("class:").unwrap_err().code(), "invalid_args");
+    }
+
+    #[test]
+    fn a_class_target_reports_no_node_path_and_refuses_to_be_an_object() {
+        let value = target_response(&TargetSpec::Class("FileAccess".into()), json!({ "method": "open" }));
+        assert_eq!(value["target"], json!("class:FileAccess"));
+        assert!(value.get("node_path").is_none());
+        let err = class_target_is_not_an_object("FileAccess");
+        assert_eq!(err.code(), "invalid_args");
+        assert!(err.to_string().contains("gd_classdb"), "{err}");
+    }
+
+    #[test]
     fn labels_round_trip_back_into_the_grammar() {
-        for text in ["/root/Main/Player", "singleton:OS", "object:7"] {
+        for text in ["/root/Main/Player", "singleton:OS", "object:7", "class:FileAccess"] {
             assert_eq!(parse_target(&parse_target(text).unwrap().label()).unwrap(), parse_target(text).unwrap());
         }
     }

@@ -16,7 +16,7 @@ use godot::builtin::{
     Aabb, Basis, Color, GString, NodePath, PackedByteArray, PackedColorArray, PackedFloat32Array,
     PackedFloat64Array, PackedInt32Array, PackedInt64Array, PackedStringArray, PackedVector2Array,
     PackedVector3Array, Plane, Projection, Quaternion, Rect2, Rect2i, StringName, Transform2D,
-    Transform3D, Vector2, Vector2i, Vector3, Vector3i, Vector4, Vector4i,
+    Rid, Transform3D, Vector2, Vector2i, Vector3, Vector3i, Vector4, Vector4i,
 };
 use godot::builtin::{Array as GArray, Dictionary, Variant, VariantType};
 use godot::meta::ToGodot;
@@ -258,6 +258,7 @@ pub fn json_to_variant_typed(value: &Value, expected: VariantType) -> Result<Var
             .as_str()
             .map(|s| NodePath::from(s).to_variant())
             .ok_or_else(|| invalid("expected a string for a NodePath property")),
+        VariantType::RID => Ok(rid_from_json_id(value)?.to_variant()),
         _ => json_to_variant(value),
     }
 }
@@ -428,6 +429,12 @@ fn tagged_to_variant(tag: &str, obj: &Map<String, Value>) -> Result<Variant, Bri
             };
             Ok(crate::handles::resolve(id)?.to_variant())
         }
+        // An RID is already a plain 64-bit value, so unlike an object it needs
+        // no handle table: the id is the whole of it. Round-tripping one is
+        // what lets the RenderingDevice and the physics servers be driven
+        // through the generic verbs, since every step of those APIs both
+        // returns and consumes RIDs.
+        "RID" => Ok(rid_from_json_id(field(obj, tag, "id")?)?.to_variant()),
         "Transform2D" => Ok(to_transform2d(&v)?.to_variant()),
         "Basis" => Ok(to_basis(&v)?.to_variant()),
         "Transform3D" => Ok(to_transform3d(&v)?.to_variant()),
@@ -436,6 +443,27 @@ fn tagged_to_variant(tag: &str, obj: &Map<String, Value>) -> Result<Variant, Bri
         "Projection" => Ok(to_projection(&v)?.to_variant()),
         other => Err(invalid(format!("unsupported __type '{other}'"))),
     }
+}
+
+/// Read the `id` of a tagged RID from either the string or the number form.
+///
+/// The string form is what this bridge emits. An RID is a 64-bit value and the
+/// broker's client is JavaScript, where `JSON.parse` silently rounds anything
+/// above 2^53 -- so a numeric id would be corrupted before the bridge ever saw
+/// it. The number form is still accepted on input, the way
+/// `handles::parse_handle_id` accepts both `"object:3"` and `3`, because a
+/// small id written by hand is unambiguous and refusing it would help nobody.
+pub(crate) fn rid_from_json_id(value: &Value) -> Result<Rid, BridgeError> {
+    let id = match value {
+        Value::String(text) => text.trim().parse::<u64>().map_err(|_| {
+            invalid(format!("RID.id '{text}' is not a 64-bit unsigned integer written as digits"))
+        })?,
+        Value::Number(number) => number
+            .as_u64()
+            .ok_or_else(|| invalid("RID.id must be a non-negative integer"))?,
+        _ => return Err(invalid("RID.id must be a decimal string or a non-negative integer")),
+    };
+    Ok(Rid::new(id))
 }
 
 /// Confine a tagged Resource path to the project or user directory
@@ -589,8 +617,12 @@ pub fn variant_to_json(variant: &Variant) -> Value {
             }
             Err(_) => json!(variant.to_string()),
         },
-        // Remaining types (RID, Callable, Signal) have no meaningful JSON
-        // form; stringify rather than drop the value.
+        VariantType::RID => {
+            let rid = variant.try_to::<Rid>().unwrap_or(Rid::Invalid);
+            json!({ TYPE_KEY: "RID", "id": rid.to_u64().to_string() })
+        }
+        // Remaining types (Callable, Signal) have no meaningful JSON form;
+        // stringify rather than drop the value.
         _ => json!(variant.to_string()),
     }
 }
@@ -661,6 +693,34 @@ mod tests {
         assert_eq!(type_tag(&json!({ "x": 1 })), None);
         assert_eq!(type_tag(&json!([1, 2])), None);
         assert_eq!(type_tag(&json!("plain")), None);
+    }
+
+    #[test]
+    fn a_rid_id_reads_from_a_string_or_a_number() {
+        // Engine-free: parsing the id happens before any Variant is built.
+        assert_eq!(rid_from_json_id(&json!("458912960610304")).unwrap().to_u64(), 458_912_960_610_304);
+        assert_eq!(rid_from_json_id(&json!(" 7 ")).unwrap().to_u64(), 7);
+        assert_eq!(rid_from_json_id(&json!(7)).unwrap().to_u64(), 7);
+        assert!(rid_from_json_id(&json!(0)).unwrap().is_invalid());
+    }
+
+    #[test]
+    fn a_rid_id_survives_above_two_to_the_fifty_third() {
+        // The reason the id is carried as a string: this value is exact here
+        // and would not survive a JSON number through the broker's client.
+        let huge = u64::MAX - 1;
+        assert!(huge > (1_u64 << 53));
+        assert_eq!(rid_from_json_id(&json!(huge.to_string())).unwrap().to_u64(), huge);
+    }
+
+    #[test]
+    fn a_malformed_rid_id_is_rejected() {
+        assert_eq!(rid_from_json_id(&json!("nope")).unwrap_err().code(), "invalid_args");
+        assert_eq!(rid_from_json_id(&json!(-1)).unwrap_err().code(), "invalid_args");
+        assert_eq!(rid_from_json_id(&json!(1.5)).unwrap_err().code(), "invalid_args");
+        assert_eq!(rid_from_json_id(&json!([1])).unwrap_err().code(), "invalid_args");
+        let missing = json_to_variant(&json!({ "__type": "RID" })).unwrap_err();
+        assert_eq!(missing.code(), "invalid_args");
     }
 
     #[test]
