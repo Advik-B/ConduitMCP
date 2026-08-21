@@ -1228,22 +1228,20 @@ const PHASE14_RULES: SectionRule[] = [
     id: "t1:compute_buffer",
     kind: "action",
     tier: "T1",
-    via: "gd_scene_node_call on the captured RenderingDevice handle: storage_buffer_create returns {__type:RID}, buffer_get_data and free_rid take one back (phase 18 acceptance, rerun after phase 19)",
+    via: "gd_scene_node_call on the captured RenderingDevice handle: storage_buffer_create returns {__type:RID}, buffer_get_data and free_rid take one back (phase 18 acceptance); the phase 20 acceptance supplies the input data as a tagged PackedByteArray, which is the half phase 18 left empty",
     pages: ["tutorials/shaders/compute_shaders"],
     match: ["provide input data", "retrieving results", "freeing memory"],
   },
   {
-    // What is left, and why it is left. The RID gap the previous rule named is
-    // closed, and RDShaderSource, RDShaderFile, RDUniform, and RDShaderSPIRV
-    // all construct through gd_scene_object create -- so the remaining doubt is
-    // not a missing mechanism but an unmeasured one: the SPIR-V compile chain
-    // and uniform_set_create, whose first argument is a typed Array[RDUniform]
-    // that the untyped array an args list builds may or may not satisfy.
-    // Graded on what a runner reaches, not on what the mechanism suggests.
-    id: "t2:compute_shader",
+    // The rest of the page, on the same terms as the two rules above: graded on
+    // what a runner reaches. Phase 20 ran the whole workflow, so the two doubts
+    // this rule used to name are both measured. The SPIR-V chain compiles the
+    // page's own doubling shader, and the engine converts the untyped array an
+    // args list builds into the typed Array[RDUniform] it declares.
+    id: "t1:compute_shader",
     kind: "action",
-    tier: "T2",
-    via: "the RID gap is closed and every RD* helper class constructs by handle, but the SPIR-V chain (RDShaderSource -> shader_compile_spirv_from_source -> shader_create_from_spirv) and uniform_set_create's typed Array[RDUniform] argument are undemonstrated (docs/api-gaps.md)",
+    tier: "T1",
+    via: "gd_scene_object create on RDShaderSource and RDUniform plus gd_scene_node_call on the captured device: shader_compile_spirv_from_source, shader_create_from_spirv, uniform_set_create, compute_pipeline_create, the compute list, submit and sync; the phase 20 acceptance reads the shader's own doubled output back out of the buffer",
     pages: ["tutorials/shaders/compute_shaders"],
     match: [""],
   },

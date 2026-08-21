@@ -1811,6 +1811,9 @@ put them there.
 
 ### The compute page splits again, on what a runner reaches
 
+*Closed in phase 20, which ran the chain rather than reasoning about it.
+Both doubts below were measured; the answers are under "Phase 20".*
+
 The RID gap is closed and every helper class the pipeline needs
 (`RDShaderSource`, `RDShaderFile`, `RDUniform`, `RDShaderSPIRV`) constructs
 through `gd_scene_object create`, so the mechanism looks complete. It is graded
@@ -1824,3 +1827,104 @@ to `shader_compile_spirv_from_source` to `shader_create_from_spirv`) is
 undemonstrated, and `uniform_set_create`'s first parameter is a typed
 `Array[RDUniform]` which the untyped array an `args` list builds may or may not
 satisfy -- the same typed-array asymmetry phase 16 hit from the other direction.
+
+---
+
+## Phase 20: the compute chain, and the typed array at the end of it
+
+### An untyped array does satisfy a typed array parameter
+
+The question phase 19's `### Next` left, and the last thing the compute page was
+graded on. `RenderingDevice.uniform_set_create` declares its first parameter as
+`Array[RDUniform]`; `handlers/call.rs::call_args` builds an untyped `Array` out
+of the JSON `args` list, because that is the only array form the wire has. The
+engine accepts it, and the phase 20 acceptance shows the whole chain running on
+that fact: a compute shader that doubles four floats reads back `[2,4,6,8]`.
+
+The conversion is Godot's rather than gdext's, and this is the reverse of the
+asymmetry phase 16 hit. There, gdext's own `Array<T>` refused to become
+`Array<Variant>` on the way out (see "A typed array used to report itself as
+empty"). Here the array goes the other way, through the engine's varcall, where
+`TypedArray`'s constructor assigns element by element.
+
+It really does assign rather than reinterpret, which the runner establishes by
+feeding the same call an array holding an `RDShaderSource` instead:
+
+```
+ERROR: Attempted to assign an object of type 'RDShaderSource' into a TypedArray,
+which does not inherit from 'RDUniform'.
+```
+
+So an `args` list needs no new tagged array form and no element-type hint. The
+tagged `Object` handles phase 16 minted are the elements, and the engine does
+the typing.
+
+### A rejected element is a soft failure, not a CallError
+
+The wrong-type probe above is worth its own note, because of how it fails. The
+declared parameter type is `ARRAY`, so the varcall's convertibility check passes
+before any element is looked at; the element rejection happens afterwards,
+inside the array assignment, where the engine prints and returns rather than
+raising. `try_call` sees a successful call. The client gets:
+
+```
+{"result": {"__type": "RID", "id": "0"}}
+```
+
+`RID(0)` is the invalid RID and it is a well-formed tagged RID on the wire, so
+"an RID came back" is not the same claim as "a uniform set was made". Nothing in
+the bridge can distinguish the two: the engine reports success and hands back a
+value the tagging faithfully carries. This is why the phase 20 acceptance rests
+on the computed readback rather than on the returned RID -- a check that only
+asserted a tagged RID would have passed against a uniform set that bound
+nothing.
+
+The general shape is worth stating: an engine-side failure that prints rather
+than erroring reaches an MCP client as a successful tool call. Phase 19's
+fabricated-RID note records the same behaviour from the physics servers, and it
+is a property of the engine's error convention, not of the transport.
+
+### The editor bridge has no error-log tool, so the print is invisible
+
+The consequence of the note above. `gd_get_logs` and `gd_get_errors` register
+only in the game personality (`handlers/mod.rs`), so an engine error printed
+during an editor-side call has no tool that can read it back. The phase 20
+runner sees the `TypedArray` message only because it spawns the editor with
+`stdout` and `stderr` piped and drains them itself, which a client driving a
+broker against an already-running editor cannot do.
+
+That is a gap rather than a bug -- the editor's error stream is a real thing the
+bridge could tail, the way `log_tail.rs` does for the game -- and it is named in
+the coverage matrix's `### Next` rather than closed here.
+
+### gd_classdb reports a typed array parameter as a bare Array
+
+Measured before the chain was written, because it decided a design. Asked for
+`uniform_set_create`, `gd_classdb op=methods class=RenderingDevice` answers:
+
+```
+{"name": "uniforms", "type": "Array"}
+```
+
+The element class is absent. Godot's method-info dictionary carries it in the
+argument's property hint, and the classdb handler does not surface hints, so a
+caller reading the tool surface cannot tell `Array[RDUniform]` from `Array`.
+Nothing depends on it now that the untyped array is known to work -- it would
+have mattered only for a coercion the engine turned out not to need -- but it is
+the reason a caller cannot discover the element type from the surface, and
+`compute_pipeline_create`'s `specialization_constants` is a second instance.
+
+### The SPIR-V chain needs no new mechanism, and one guard
+
+`RDShaderSource` constructs through `gd_scene_object create` with
+`source_compute` and `language` as initial properties;
+`shader_compile_spirv_from_source` returns an `RDShaderSPIRV` that `capture`
+holds as a handle; `shader_create_from_spirv` takes that handle back as a tagged
+`Object` and returns a tagged RID. Every step was already reachable after phase
+19, which is why phase 20 ships no bridge change.
+
+The guard is `get_stage_compile_error`. A GLSL mistake does not fail
+`shader_compile_spirv_from_source` -- it returns an `RDShaderSPIRV` carrying the
+compiler's message -- so a chain that skipped the check would fail three calls
+later, inside `shader_create_from_spirv`, with an error about the shader rather
+than about the source. The acceptance reads it before trusting the SPIRV.

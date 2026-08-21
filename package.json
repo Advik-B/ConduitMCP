@@ -32,7 +32,8 @@
     "phase16": "bun tests/evals/phase16_objects.ts",
     "phase17": "bun tests/evals/phase17_signals.ts",
     "phase18": "bun tests/evals/phase18_rendering_device.ts",
-    "phase19": "bun tests/evals/phase19_static_rid.ts"
+    "phase19": "bun tests/evals/phase19_static_rid.ts",
+    "phase20": "bun tests/evals/phase20_compute.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

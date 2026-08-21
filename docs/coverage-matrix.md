@@ -115,7 +115,7 @@ surface cannot name.
 
 431 pages across 30 areas, swept exhaustively at heading level:
 3381 headings, 457 in excluded areas, 937 conceptual, leaving
-**1987 discrete actions**, of which **286 (14.4%) are T2 or worse**.
+**1987 discrete actions**, of which **283 (14.2%) are T2 or worse**.
 
 | Docs area | T0 | T1 | T2 | T3 | T4 | T5 | actions | concepts |
 |---|---|---|---|---|---|---|---|---|
@@ -138,7 +138,7 @@ surface cannot name.
 | tutorials/plugins | 5 | - | 28 | 8 | - | 4 | 45 | 9 |
 | tutorials/rendering | 1 | 55 | - | - | - | - | 56 | 26 |
 | tutorials/scripting | 28 | 260 | 5 | 11 | - | - | 304 | 306 |
-| tutorials/shaders | - | 54 | 3 | 2 | - | - | 59 | 169 |
+| tutorials/shaders | - | 57 | - | 2 | - | - | 59 | 169 |
 | tutorials/ui | 6 | 110 | - | 4 | - | - | 120 | 11 |
 | tutorials/xr | 3 | 10 | - | - | - | 111 | 124 | 33 |
 
@@ -352,7 +352,6 @@ it, largest first.
 | T2 | 5 | 3 | gd_import_settings reads and writes .import options, but these need an import plugin or a dialog-authored sub-resource; gd_editor_eval only |
 | T5 | 4 | 1 | no tool; 3D gizmo authoring is an editor-plugin surface with no runtime equivalent |
 | T3 | 3 | 1 | gd_editor_ui; the theme editor's preview and item-management panels, as distinct from the Theme resource they edit |
-| T2 | 3 | 1 | the RID gap is closed and every RD* helper class constructs by handle, but the SPIR-V chain (RDShaderSource -> shader_compile_spirv_from_source -> shader_create_from_spirv) and uniform_set_create's typed Array[RDUniform] argument are undemonstrated (docs/api-gaps.md) |
 | T3 | 2 | 1 | gd_editor_ui; LightmapGI has no methods at all in the 4.7 reference, so Bake Lightmaps is a plugin toolbar button with no scriptable equivalent |
 | T3 | 2 | 1 | gd_editor_ui; OccluderInstance3D exposes only its bake mask accessors, so baking occluders and previewing the result are editor actions |
 | T3 | 2 | 1 | gd_editor_ui; the graph editor's own interface, as distinct from the VisualShader resource it edits |
@@ -612,32 +611,88 @@ won turns out to be architecture prose that never touched an RID. The compute
 page splits rather than flipping, again: the buffer pair is earned, the SPIR-V
 chain is not.
 
+**Phase 20: the compute chain, and the typed array at the end of it.** The one
+item the last `### Next` called clearest, and it turned out to need no code.
+
+Three documents asserted the same gap and none of them rested on a measurement:
+`uniform_set_create` declares `Array[RDUniform]`, an `args` list builds an
+untyped `Array`, and whether the engine accepts one for the other was
+undemonstrated. It does. `TypedArray`'s constructor assigns element by element,
+which is the reverse of the asymmetry phase 16 met on the way out, where gdext's
+own `Array<T>` refused to become `Array<Variant>`. So the wire needs no tagged
+array form and no element hint: the `Object` handles phase 16 minted are the
+elements and the engine does the typing.
+
+*Accepted* by `bun run phase20`, with `--disable-eval`: the compute-shader page's
+own doubling shader, sized to four floats, compiles through `RDShaderSource` and
+`shader_compile_spirv_from_source` with an empty `get_stage_compile_error`,
+`shader_create_from_spirv` and `storage_buffer_create` hand back tagged RIDs, an
+`RDUniform` built by handle takes the buffer's RID through `add_id`,
+`uniform_set_create` accepts the one-element untyped array, and after the compute
+list, `submit` and `sync`, `buffer_get_data` reads `[1,2,3,4]` back as
+`[2,4,6,8]`.
+
+The acceptance is that readback rather than the returned RID, and the reason is
+the boundary the same runner measures. An array holding an `RDShaderSource` is
+refused -- "does not inherit from 'RDUniform'" in the engine's own words -- but
+refused *softly*: the varcall succeeds, the engine prints, and `RID(0)` comes
+back, which is a well-formed tagged RID on the wire. A check that asserted only
+"a tagged RID came back" would have passed against a uniform set that bound
+nothing, which is the circular grading phases 14, 18 and 19 each caught somewhere
+else.
+
+Two things were measured before the chain was written, and one of them decided a
+design. `gd_classdb` reports the parameter as a bare `Array` with no element
+class, which removed the option of inferring the element type from ClassDB and
+left the tagged form as the only fallback -- neither of which the engine turned
+out to need. And `compute_list_end` takes no argument in 4.7.1 while
+`compute_list_dispatch` takes group counts: an arity mistake there arrives as
+`invalid_args` and reads exactly like a typed-array refusal, which would have
+corrupted the finding the phase turns on.
+
+The regrade is one rule and three headings, exactly the three the last `### Next`
+projected: `t2:compute_shader` becomes `t1:compute_shader`, tutorial T2 goes 101
+to 98, and no tool was added for them. `t1:compute_buffer` keeps its tier and
+gains the half phase 18 left empty, since the buffer this runner creates carries
+input data as a tagged `PackedByteArray`. The runner stays out of `ci:phases` for
+the reason phase 18 does.
+
 ### Next
 
-Nothing in the class reference, and nothing behind a naming gap: five generic
-verbs, four target schemes, and a value form for the one thing that is neither an
-object nor a name.
+Nothing left on the compute page, and nothing left in the class reference: five
+generic verbs, four target schemes, and a value form for the one thing that is
+neither an object nor a name.
 
-The clearest remaining item is small and specific. `uniform_set_create` takes a
-typed `Array[RDUniform]`, and an `args` list builds an untyped `Array`; whether
-the engine accepts one for the other is undemonstrated, and it is the last thing
-between the compute page's three remaining headings and T1. It is the same typed
-array asymmetry phase 16 met from the reading side, where gdext refused to
-convert `Array[Node]` into `Array<Variant>`. One runner answers it either way.
+The clearest remaining item is one phase 20 found rather than predicted. An
+engine error printed during an editor-side call reaches no client. `gd_get_logs`
+and `gd_get_errors` register only in the game personality, so the editor's error
+stream has no tool that can read it back, and the phase 20 runner saw the
+`TypedArray` message only because it spawns the editor itself and drains its
+pipes. That is the difference between a caller who can tell `RID(0)` from a
+uniform set and one who cannot. `log_tail.rs` already does this for the game,
+but it is a tool addition rather than a one-file change: a new handler on the
+editor personality needs a `TOOL_GROUP_BY_NAME` entry, and `runtime` is the
+game group, so the group is a decision the work inherits.
 
-Two smaller ones. The per-member via strings in the class-reference tables say
-`target: object:...` for static methods, which `class:<Class>` has made merely
-imprecise rather than wrong; fixing it means teaching `extract-docs.ts` to read
-the `static` marker. And `CallError`'s kind is not public in gdext 0.5.5, so
-every dispatch failure reports `invalid_args`; if a later gdext exposes it, the
-split is one function.
+A smaller one on the same call: `gd_classdb` does not surface a method
+argument's property hint, so `Array[RDUniform]` and `Array` read the same on the
+tool surface, as do `compute_pipeline_create`'s specialization constants. Nothing
+depends on it now, but it is why a caller cannot discover an element type without
+running the call.
 
-What is left in the tutorials is not a naming problem. The largest clusters are
-`t2:gettext` (31 headings, an editor menu action with no scripted entry point),
-`t2:plugin_authoring` (27, writing plugin code rather than driving the editor),
-`t2:tilemap_editor_page` (13, paint tools with no semantic equivalent), and
-`t2:custom_draw` (15 across two rules, arbitrary `_draw()` work that needs a
-script). Each is a tool decision rather than a grammar one.
+Two carried forward from the last `### Next`, unchanged. The per-member via
+strings in the class-reference tables say `target: object:...` for static
+methods, which `class:<Class>` has made merely imprecise rather than wrong;
+fixing it means teaching `extract-docs.ts` to read the `static` marker. And
+`CallError`'s kind is not public in gdext 0.5.5, so every dispatch failure
+reports `invalid_args`; if a later gdext exposes it, the split is one function.
+
+What is left in the tutorials is not a naming problem. The largest T2 clusters
+are `t2:gettext` (31 headings, an editor menu action with no scripted entry
+point), `t2:plugin_authoring` (27, writing plugin code rather than driving the
+editor), `t2:custom_draw` (15 across two rules, arbitrary `_draw()` work that
+needs a script), and `t2:tilemap_editor_page` (13, paint tools with no semantic
+equivalent). Each is a tool decision rather than a grammar one.
 
 XR is deliberately absent from this list. It needs hardware and a runtime the
 bridge cannot simulate, and the honest answer is to say so rather than to ship a
